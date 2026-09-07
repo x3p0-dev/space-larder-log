@@ -6284,3 +6284,505 @@ remains the most misleading part of the failure, and it cost a hypothesis on Sep
 nothing: the scaffold's queries and mutations fail with the endpoint present,
 and v26 already proved they fail with no endpoints declared. The block is
 Spacefast's loader, it is total, and it waits on their fix.
+
+---
+
+## 2026-09-04 — the preview gate is solved, and a *fresh* delivery still 422s
+
+Two findings, and the first one retires a complaint this log has filed three
+times.
+
+### 👍 `preview-session` is the missing check, and it is one curl
+
+`POST /v1/spaces/{spaceId}/versions/{versionId}/preview-session` mints a
+short-lived URL that **exchanges its proof for a cookie on the version's own
+origin** and redirects to the landing path. It is in `openapi.json` (API
+`0.3.0`) and it is **not surfaced by the CLI at all** — no `sf versions open`,
+nothing in `sf versions --help`. Found by grepping the spec, not by reading a
+docs page.
+
+That closes the gap: a staged `vN--` version answers **403** to an anonymous
+curl, to a Bearer API key, and to that key as a cookie — so until today the
+only way to check a staged version was a human in a browser, which is exactly
+the check that gates every publish decision here.
+
+```bash
+TOK=$(node -p "require('$HOME/.spacefast/auth.json').accessToken")
+U=$(curl -s -X POST -H "authorization: Bearer $TOK" \
+  -H 'content-type: application/json' -d '{"landingPath":"/api/status"}' \
+  "https://api.spacefast.com/v1/spaces/$SPACE/versions/$VERSION/preview-session" \
+  | node -p "JSON.parse(require('fs').readFileSync(0,'utf8')).data.url")
+curl -s -c jar.txt -L "$U"                       # the exchange, and the answer
+curl -s -b jar.txt "https://vNN--slug.view.fast/__spacefast/zero/run" \
+  -X POST -H 'content-type: application/json' \
+  -d '{"op":"query.run","name":"households","args":[]}'
+```
+
+**The cookie outlives the landing request**, which is what makes it a probe
+rather than a screenshot: the second call above is a real `query.run` against a
+staged capsule. `landingPath` takes any path, `/api/status` included.
+
+**And it discriminates**, which is the only reason to trust it: run against the
+live **v19** it returns `ok` / 200, and against **v25** the 422. Both measured
+in the same minute.
+
+*Still friction*: the operation exists and nothing points at it. `sf versions
+get` prints an `immutableUrl` that answers 403, with no hint that a session can
+be minted for it. A `sf versions open --path /api/status` wrapping this would
+have saved three days of "a human has to look."
+
+### The blockade is real, current, and reproducible in 9 seconds
+
+The open question was whether the 422 verdict is computed **per delivery** or
+**per request** — v20–v23 were byte-identical redeliveries of v18 that 422'd
+while v18 served, which says per-delivery, and would mean every check of an
+existing version tells you nothing about today's loader.
+
+So a **fresh delivery** was published today, on the throwaway `zeroprobe` space,
+**not larderlog**:
+
+```
+sf init zp --runtime zero --template todo   # 19 files, nobody's code
+sf publish --space spc_474a… --target preview
+→ v2 (ready), ver_75413bbc7ced4768a242e5505fbc94c1, 18 uploaded, 8.9s
+```
+
+**Both invocation paths refuse it:**
+
+| call | result |
+|---|---|
+| `GET /api/status` | 422 `zero_artifact_mode_invalid` — *"A read handler cannot carry write-side capabilities."* |
+| `POST /__spacefast/zero/run` `query.run todos` | 422 `zero_artifact_mode_invalid` — *"Zero artifact mode does not match the invocation mode."* |
+
+So: **a hello-world scaffolded and published today cannot answer a single
+call.** Nothing about larderlog is implicated, the toolchain is not stale on our
+side, and the failure needs 19 files and nine seconds to reproduce.
+
+### Nothing has moved anywhere else
+
+| signal | 2026-09-02 | 2026-09-04 | moved? |
+|---|---|---|---|
+| `spacefast` / `@spacefast/zero` on npm | `0.2.2` (Aug 28) | `0.2.2` (Aug 28) | **no** |
+| dist-tags (any prerelease lane) | `latest` only | `latest` only | **no** |
+| `/docs/errors/zero_artifact_mode_invalid` | 404 | **404** | **no** |
+| docs search for the code | 0 results | **0 results** | **no** |
+| `zero-runtime.md` mentions of "mode" | — | **0, in 22 KB** | — |
+| package changelogs | stale at `0.0.26` | stale at `0.0.26` | **no** |
+| live v19 `/api/status` | `ok` | `ok` | no — healthy |
+
+**👎 The error the platform is returning is not in the platform's own error
+registry.** Its `type` URI —
+`https://spacefast.com/docs/errors/zero_artifact_mode_invalid` — is a link the
+runtime hands you that 404s, and the docs search knows nothing about it. That is
+the whole self-service path exhausted in two requests.
+
+### There is no knob on our side, and that was checked rather than assumed
+
+The word "mode" does not appear once in `zero-runtime.md`. The compiled artifact
+has exactly **one** field named `mode` — `realtime.mode: "central"`, beside
+`futureCapabilities: ["blob","ai"]` — and `https://spacefast.com/schemas/sf.json`
+has **no** `realtime`, `mode` or capability key at all, so nothing in `sf.jsonc`
+can influence it. The one place the phrase "write-side" appears in the shipped
+toolchain is a *comment* in the bundled handler-context builder — `kind` decides
+which services a context carries, and a query is denied mail and spam-filing
+with `service_capability_denied`. That is the same vocabulary the 422 uses,
+which suggests the loader is validating a per-handler capability declaration
+that **no released compiler emits**. Unconfirmed, and not ours to fix.
+
+**Where this leaves the app.** Live is still **v19 at eleven tables**; the
+artifact is at fifteen. Working tree clean. The first successful publish is
+still the largest migration this project has run, and `migrateAtFinalize: true`
+lands it at promotion — so the sequence when the platform returns is unchanged:
+publish `--target preview`, **check it with a preview session now that that is
+possible**, then promote.
+
+---
+
+## 2026-09-04 — `spacefast/examples` cannot explain it, and its own Zero app is down
+
+Read `https://github.com/spacefast/examples` (master, last pushed **2026-08-31**,
+the day before the breakage) to see whether a working capsule differs from ours.
+It does not, and three things fell out of looking.
+
+### 👍 `access: "public"` is the visibility knob, and it is in `sf.jsonc`
+
+Every Zero example carries `"access": "public"` in its `sf.jsonc`. It is in the
+published schema —
+
+```
+.properties.access = "public"   // shorthand for { "public": ["/**"] }
+```
+
+— with a path-list form (`{ "public": ["/**", "!/admin/**"] }`) beside it. **The
+Sep 2 entry above is wrong** where it says a new space is private by default and
+*"the CLI cannot make it public"*: the CLI has no flag, but the config file has
+the field, and it works. Added to the probe's `sf.jsonc` and republished:
+`https://zeroprobe.view.fast/` went from **403 "This space is private"** to
+**200**, anonymously, no token and no cookie.
+
+That retires the second of the two gates this log has complained about, and it
+is worth more than convenience — **the repro is now a public URL** anybody at
+Spacefast can curl without an account.
+
+*Friction that remains*: `sf spaces update` still surfaces `--name`, `--mode`,
+`--slug` and viewer metadata and nothing for access, so the only way to find
+this was reading someone else's example. It belongs in `sf publish --help`.
+
+### The examples are stale, and pinned three minors behind
+
+| app | pins | authoring API |
+|---|---|---|
+| `examples/zero-perfect/site` | `@spacefast/zero@^0.0.19` | `query((ctx) => ctx.db.todos.where(…).orderBy(…).all())` |
+| `comments` | `0.0.23` | same shape |
+| `kitchen-sink` | `0.0.23` | same shape |
+
+**None of them is written the way `sf init --runtime zero` scaffolds today**,
+which emits `query(async (ctx) => …withIndex("by_owner", …).order("desc")
+.collect())` — the shape `zero-runtime.md` documents and the shape this app
+uses. So the canonical examples and the canonical scaffold disagree about the
+query builder, and the examples are the ones that are wrong.
+
+**And the gallery's only Zero entry is not deployed.** `meta.json` for
+`zero-perfect` advertises `https://zero-perfect.view.fast/`, which **302s to
+`wordpress.com/typo/?subdomain=zero-perfect`** — the subdomain does not exist.
+`comments.view.fast` is **403** and `kitchen-sink.view.fast` is **503** with
+`x-spacefast-runtime: 1`. Of three Zero apps in Spacefast's own examples
+repository, **none serves a request today.**
+
+### 👎 Their own example fails exactly as ours does
+
+The decisive test. `examples/zero-perfect/site` published **unmodified**, from
+their commit, to a **brand-new space** of its own:
+
+```
+sf publish --slug zeroperfectprobe     → v1 (ready), 20 files, 7.1s
+```
+
+| call on `https://zeroperfectprobe.view.fast/` | result |
+|---|---|
+| `GET /` | **200** — the static shell paints |
+| `GET /api/status` | **422** `zero_artifact_mode_invalid` — *"A read handler cannot carry write-side capabilities."* |
+| `POST /__spacefast/zero/run` `query.run todos` | **422** — *"Zero artifact mode does not match the invocation mode."* |
+
+So the failure survives a completely different capsule, a different authoring
+API, a different pinned runtime (`0.0.19` against our `0.2.2`), a different
+space, and Spacefast's own authorship. **There is nothing left that is ours.**
+
+It also rules out the one hypothesis the examples raised: their handlers are
+**synchronous** where the scaffold's are `async`, so if the loader were deriving
+a handler's mode from its shape, these two would differ. They do not.
+
+### Two public repro URLs, no auth required
+
+Both are throwaway spaces; larderlog was not touched by any of this.
+
+| URL | what it is |
+|---|---|
+| `https://zeroprobe.view.fast/api/status` | `sf init --runtime zero --template todo`, 19 files, unmodified |
+| `https://zeroperfectprobe.view.fast/api/status` | `spacefast/examples` → `zero-perfect`, unmodified |
+
+Either one is a one-line bug report: *this is your own starter, published with
+your own CLI, and it cannot answer a request.*
+
+## 2026-09-07 — `zero_artifact_mode_invalid`: the source, found on Spacefast's own site
+
+A published Spacefast space — **`https://zero.view.fast/`**, *"Spacefast ×
+WordPress, explained in code"* — carries **695 verbatim snippets extracted from
+the Spacefast monorepo** at commit `92d86a7dbb028d5d5c8e3027d639bf5c59d52d5a`,
+including `crates/stattic-zero-runner/`, `packages/zero/src/`,
+`packages/zero-compile/src/` and `runtime/engine/`. It is a public page with no
+auth. The data is in `data/snippets.js`; the charts are `data/diagrams*.js`.
+
+It contains the check that has blocked every publish since 2026-09-01.
+
+### 🐛 The refusal, verbatim — `crates/stattic-zero-runner/src/artifacts.rs:396`
+
+```rust
+if !self.frozen_shape
+    && self.execution_mode == ExecutionMode::Read
+    && (self.capabilities.fetch || self.capabilities.email || self.capabilities.realtime)
+{
+    return Err(error_response(
+        422,
+        "zero_artifact_mode_invalid",
+        "A read handler cannot carry write-side capabilities.",
+    ));
+}
+```
+
+So the refusal set is exactly **`fetch`, `email`, `realtime`** on an artifact
+whose `execution_mode` is `Read`, and `frozen_shape` is the flag that skips it —
+which is the shape of "v19 still serves while every fresh delivery 422s."
+
+`EndpointCapabilities` (`artifacts.rs:143`) defaults `fetch`, `realtime`,
+`email`, `content`, `storage` and `connectors` **closed**, with a comment saying
+so: *"The write-side authorities default closed. A read artifact that never
+named them would otherwise inherit an open grant the execution mode forbids, and
+`validate_for` would reject at serve time an artifact the finalizer was happy to
+publish."* That is this bug, described in its own source, in advance.
+
+### 🐛 The released compiler cannot emit the field the runner reads
+
+The monorepo's own `generated/finalize.json` carries, per run:
+
+```json
+{ "executionMode": "read", "runId": "query_plateShelf",
+  "capabilities": { "db": true, "fetch": false, …, "realtime": false, "email": false, … } }
+```
+
+**Ours carries no `executionMode` at all**, on any of its 48 records — read off
+`.spacefast/zero/finalize.json` from the last dry run:
+
+| record | `executionMode` | `realtime` | `email` | `fetch` |
+|---|---|---|---|---|
+| `GET /api/status` | **absent** | **true** | **true** | false |
+| `query_account` (all 15 queries) | **absent** | false | false | false |
+| `mutation_addItem` (all 32) | **absent** | true | true | false |
+
+And the field is not merely unset by us — **`executionMode` appears zero times in
+the whole of `spacefast@0.2.2`'s `dist/`**, the current `latest` on npm:
+
+```bash
+grep -roh "executionMode" node_modules/spacefast/dist | wc -l   # → 0
+```
+
+**Nor can a capsule declare one.** The newer compiler requires it — *"Zero
+endpoint must use literal mode, method, and path"* (`analyze.ts:874`, with
+`ENDPOINT_MODE_PATTERN = /\bmode\s*:\s*["'](read|write)["']/`) — but on the
+pinned SDK the property does not exist:
+
+```
+server/index.ts(4180,37): error TS2353: Object literal may only specify known
+properties, and 'mode' does not exist in type 'EndpointRoute'.
+```
+
+Measured, then reverted; `server/index.ts` is unchanged.
+
+**So there is no knob, and that is now proven by the type system rather than
+inferred.** A runner deployed to the fleet validates a per-handler field that
+the only published toolchain never writes and the only published types cannot
+express. Every artifact built by any released CLI is unloadable by it — which is
+why Spacefast's own `--template todo` scaffold, published in nine seconds,
+answers 422 as readily as ours does.
+
+**The fix is entirely theirs**, and it is one of three: default a missing
+`execution_mode` to `Write` (or skip the capability check when the field is
+absent), ship a compiler that emits it, or derive the capability set from the
+analyzed surface rather than writing constants — which the site's own charts
+already file as a defect: *"compile.ts:650 (runs) and :702 (endpoints) write
+`storage:false` and `fetch:false` as constants. `query_plateShelf` calls
+`ctx.storage.list` and declares `storage:false`. Derive them from the analyzed
+surface, or drop the field."*
+
+**Where it leaves the app**: unchanged. Live is v19 at eleven tables, working
+tree clean, nothing to try. The difference is that the report now names a file,
+a line and a condition instead of an error string the vendor's own docs 404 on.
+
+### 👍 Nine other answers from the same source, several of which retire notes in this log
+
+- **`collect()`'s 1,000-row cap is the dev harness, and the hosted ceiling is
+  50,000 rows / 10 MiB.** `crates/stattic-zero-runner/src/db.rs:15` —
+  `DB_RESULT_ROWS_MAX = 50000`, `DB_RESULT_BYTES_MAX = 10_485_760`, against the
+  CLI's `MAX_LOCAL_QUERY_ROWS = 1e3`. The 2026-09-02 entry called the
+  `MAX_LOCAL_*` reading "a guess"; it was right. `collectAll` stays correct —
+  50,000 is still a ceiling, and the byte limit can bite first.
+- **The database session is pinned to `REPEATABLE-READ`** (same file), and
+  **`DB_TRANSACTION_MAX_STATEMENTS = 64`**, `DB_OPERATION_MAX_BYTES = 64 KiB`,
+  `DB_PARAM_MAX_COUNT = 256`. The 64 is the ceiling on one batched transaction
+  frame; whether it bounds a whole mutation is the open half, and it is the
+  number to hold against `addItems` / `restockItems`, which are capped at 200.
+- **A mutation *is* the transaction, and there are no locking reads.** The
+  charted db surface is `get, withIndex, order, take, first, paginate, insert,
+  update, delete` — *"no execute(), no sql tag and no explicit transaction."*
+  With snapshot reads at REPEATABLE READ and no `SELECT … FOR UPDATE`, two
+  concurrent read-modify-writes on one counter row can lose an update. That is
+  `scale.md`'s question 1, narrowed from "unknown" to one precise question for
+  the vendor: **does the runner take a row lock on `get`/`withIndex` inside a
+  mutation?**
+- **`ctx.storage` exists and no type declares it** — `list` / `get` / `delete`,
+  with `put` always rejecting. The console's *storage* card was cut on the
+  grounds that "the server context carries no storage handle"; the handle is
+  there (built at `runtime-host.ts:550`), just undeclared. **`ctx.log.debug`**
+  is the same shape. `ctx.ai` and `ctx.blob` are empty object literals with
+  nothing behind them.
+- **There is a scheduler.** `sf.jsonc` takes `crons` (five-field crontab, plus
+  `1h`/`2d`/`3w` shorthand), `sf crons ls` / `sf crons run <path>` drive it, and
+  the platform marks its own call with `X-Spacefast-Cron` and a `CRON_SECRET`
+  bearer. D62's *"enforcement is append-time, because there is no scheduler"* is
+  wrong on its premise — a cron hitting a Zero endpoint is the honest home for
+  retention pruning and for `adminRepairCounts`.
+- **The publish payload has a stated rule after all**: `.assetsignore`,
+  `.vercelignore` and `.nowignore` are read at `publish-runtime.ts:2345`. That
+  is the answer to *"`sf publish` mirrors the project root selectively… there is
+  no stated rule"*, and it is how the `.idea/` and `.jsx` "unsupported file"
+  warnings get silenced.
+- **`usePaginatedQuery` exists** in the client SDK (`client.ts:919`), taking
+  `{cursor, numItems}` and returning `{page, isDone, continueCursor}` — the
+  browser-side twin of the `paginate()` walk `collectAll` does server-side.
+- **The schema regexes are verbatim** at `analyze.ts:94`, and the monorepo files
+  the comment bug as a known defect: *"the member scan reads raw source.
+  `CAPSULE_MEMBER_PATTERN` runs on the file text; content declarations use
+  `scrubNonCode` and queries/mutations do not… Reproduced once as
+  `query_latestGuides.js`; this capsule's comment omits the colon to avoid it."*
+  That is the 2026-09-02 finding, independently reproduced by its authors.
+  `TABLE_PATTERN`'s `\{([\s\S]*?)\}\s*\)` and its `\s*` before `.index(` are
+  exactly the two edges that cost us a publish.
+- **`/__zero/*` is a live alias for `/__spacefast/zero/*`**, and cookie-
+  authenticated mutations require `Origin`, `Sec-Fetch-Site: same-origin` and
+  `content-type: application/json` — a 403 `zero_mutation_origin_invalid`
+  otherwise. An anonymous `query.run` is not subject to it, which is why the
+  v15 probe worked.
+
+**What it does not answer**: nothing in the extract explains why an
+`AccessError`'s message is replaced by `Exception generated by QuickJS` in
+production. The QuickJS binding is named (`rquickjs-0.12`, in
+`finalizer-protocol.generated.php`) and nothing about error propagation is
+charted. That question stands.
+
+**A caveat worth keeping**: the snapshot is one commit, undated, and it is
+plainly *ahead* of the published npm toolchain — `executionMode`, endpoint
+`mode` and `scrubNonCode` are all in it and none is in `0.2.2`. Read it as
+evidence about the runtime our spaces are served by, not as documentation of
+the SDK we compile against.
+
+## 2026-09-07 — the docs were rewritten on 09-05, and they now document the field our SDK cannot express
+
+`https://github.com/spacefast/docs` is public: `spacefast/docs`, `main`, created
+2026-07-18, last pushed **2026-09-06 09:11 UTC**. Three commits since the
+blockade began, and the first of them is a **total rewrite** — `docs: rewrite
+public documentation (#41)`, 2026-09-05, every page replaced.
+
+| commit | date | what |
+|---|---|---|
+| `0bf6148` | 09-06 09:11 | Publish Zero docs outside the runtime artifact directory |
+| `e52802a` | 09-06 08:39 | Fix canonical Zero documentation routing |
+| `ffbd49e` | **09-05 12:23** | **docs: rewrite public documentation (#41)** |
+| `4da62e6` | 08-29 | Remove the Website dispatch for good |
+
+The two 09-06 commits are why `/docs/zero.md` 404s and `/docs/zero-runtime.md`
+serves: the page moved to `content/(dynamic)/zero-runtime.mdx` with the former
+routes preserved as redirects. That half is already in CLAUDE.md.
+
+### 🐛 The rewrite documents `endpoint({ mode, method, path })`. npm does not ship it.
+
+The new Zero page's minimal app, verbatim:
+
+```ts
+endpoints: {
+  status: endpoint({ mode: "read", method: "GET", path: "/api/status" }, () => text("ok")),
+},
+```
+
+> `endpoint(route, handler)` takes `{ method, path, mode }`, where `mode` is
+> `"read"` or `"write"`.
+
+**The page it replaced said no such thing.** `content/zero-runtime/index.mdx` at
+`ffbd49e^`, the 674-line page that was live until 09-05, gives
+`endpoint({ method: "POST", path: "/webhooks/entries" }, …)` — method and path,
+no mode, which is exactly what this capsule writes and exactly what the pinned
+types allow.
+
+So the timeline is now dated on both sides:
+
+| when | what |
+|---|---|
+| 2026-08-28 23:49 | `spacefast` / `@spacefast/zero` **0.2.2** published. Still `latest` today; registry `modified` has not moved |
+| 2026-09-01 | every fresh delivery starts answering `422 zero_artifact_mode_invalid` |
+| **2026-09-05** | the docs are rewritten to require `mode` on every endpoint |
+| 2026-09-07 | npm unchanged. `EndpointRoute` has no `mode`; adding one is `TS2353` |
+
+A documented contract landed four days into the outage, for an SDK that has
+never been released. **This is the same finding as the 09-07 runner entry above,
+arriving from the vendor's other side of the wall** — the runner validates a
+per-artifact execution mode, and the docs now describe how a capsule would
+declare one, and the only published package can neither emit it nor type it.
+
+### 🐛 `sf runtime status` shows the platform deriving the mode itself
+
+This is the confirmation the finalize-payload reading was missing. Our own live
+version's recorded capsule metadata carries a mode our compiler never wrote:
+
+```json
+"endpoints": [ { "mode": "read", "method": "GET", "path": "/api/status" } ]
+```
+
+So the platform classifies `GET /api/status` as **read**, our compiler emits
+that endpoint with `realtime: true` and `email: true` as constants, and the
+runner refuses `Read && (fetch || email || realtime)`. The chain is closed:
+derived mode, constant capabilities, new check, no lever.
+
+`sf runtime status --json` is worth keeping for its own sake. It answers from
+version metadata rather than the runtime, *"so it answers while the runtime is
+asleep or moving"* — which is the one condition this space has been in for six
+days. It prints the live version, tables, queries, mutations, endpoints with
+their modes, bundle sizes, schema hash, the `.env.server` variable **names**,
+`migrateAtFinalize: true`, `blockIncompatibleRollback: true`, and the binary's
+compatibility target. Nothing else in the CLI shows that in one call.
+
+### 🐛 The error code is still not in the registry, and now that is measurable
+
+The repo generates one page per error code: `generated/errors/`, **591 files**,
+`manifest.json` counting `errorCodes: 590`. It carries five siblings —
+`zero_artifact_abi_mismatch`, `_invalid`, `_malformed`, `_path_invalid`,
+`_unreadable` — and **not `zero_artifact_mode_invalid`**. Its own
+`zero_artifact_abi_mismatch` page says *"Match on `code`, never on `detail`"*,
+which is sound advice about a code whose page does not exist.
+
+So the 404 on `https://spacefast.com/docs/errors/zero_artifact_mode_invalid` is
+not a stale build. The registry is generated from a source that does not know
+this code, while the fleet returns it — the same drift, in a third place.
+
+### 👍 What else the rewrite changed that we act on
+
+- **`sf db console` mints a single-use phpMyAdmin URL with full SQL authority
+  over the space's database** (`POST /v1/spaces/{id}/db/console`, `--show-secret`
+  to print instead of open). That is a supported route to read production rows —
+  which CLAUDE.md's *Going live needs one id that nothing will tell you* says
+  does not exist. **The `localStorage['stattic_zero_identity']` trick is no
+  longer the only way to learn an `account:` id.**
+- **And it explains `sf db dump` / `sf db export` failing with
+  `zero_db_connect_failed`.** The new page: *"The dump reads through the space's
+  live runtime, so it needs the app to be reachable."* It is not a database
+  fault and never was — it is the runtime lane, the same one the 422 is in.
+  `sf db export` walks keyset pages of **500 rows**, atomic, mode `0600`.
+- **`capsule()` takes a `favicon` key.** Undocumented until now; this app has
+  been appending its icons to `document.head` at boot since Phase 1.
+- **`/__zero/run` is the documented run path**, and `__spacefast/zero` does not
+  appear anywhere in the new docs. Both still serve — our own version metadata
+  reports `runPath: /__zero/run` beside `storageRoot: __spacefast/zero` — and
+  `zero.php` keeps the long spelling forever, because frozen bundles compare it
+  exactly.
+- **`usePaginatedQuery` and `@spacefast/zero/charts` are documented now**
+  (`LineChart`, `BarChart`, `Sparkline`, `StatTile`). D69 built and removed
+  sparklines by hand; there is a primitive.
+- **`action()` is gone from the docs**, matching the runner's *"the vocabulary
+  this engine compiles no longer emits actions"*.
+- **The ctx table shrank to `db`, `auth`, `env`, `log`, `invalidate`.** The old
+  page listed `ctx.email`, `ctx.spam` and `ctx.gravatar`; the new one does not,
+  though the runner still routes all three. `ctx.storage` is still undeclared
+  anywhere.
+- **Crons, in numbers**: a scheduled `GET` through the front door, **8 per
+  space**, 3 concurrent, 8-hour ceiling, **no retries**, overlapping fires
+  skipped rather than queued, `sf.jsonc` the only writer so a rollback restores
+  schedules. A `<400` response is success and silent. Note the irony for us: the
+  natural cron target is a Zero **endpoint**, which is the artifact kind the
+  fleet currently refuses.
+- **Limits worth pinning**: endpoint request body **2 MiB**, server bundle
+  **768 KiB**, client bundle **8 MiB** (platform modules exempt), storage object
+  upload **5 MiB**, `sf db dump --limit` 1–100 default 25, files per version
+  100,000, 600 req/min per credential.
+- **`.collect()` is still documented as "every matching row"** with no ceiling
+  named, while the runner caps a result set at 50,000 rows / 10 MiB and the dev
+  server at 1,000. The most consequential number in the read API is in neither
+  the docs nor the types. `collectAll` stays.
+
+### Still undocumented after a full rewrite
+
+`?guest=<name>` on `sf dev`, the `preview-session` API that is the only way to
+probe a staged version, the `POST /__zero/run` envelope itself (`op`,
+`name`, `args`), and every row cap above. The first two are the two things that
+have most changed how this project verifies its work.
+
+**CLAUDE.md is stale in one line because of this**: it calls
+`/docs/zero-runtime.md` *"the whole runtime reference… ~22 KB"*. It is 212 lines
+now, and the 674-line page it replaced is only in git history.

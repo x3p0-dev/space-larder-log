@@ -36,7 +36,11 @@ const { execSync } = require('child_process');
 const { existsSync, readFileSync } = require('fs');
 const path = require('path');
 
-const ROOT = '/Applications/XAMPP/xamppfiles/htdocs/wp/wp-content/plugins/x3p0-larder-log';
+// Derived, never written down: this file is `.dev/seed.cjs`, so the project
+// root is one level up. A literal path here breaks the moment the checkout
+// moves or is renamed, and it breaks silently -- the `existsSync` below just
+// rebuilds into a directory nobody reads.
+const ROOT = path.resolve(__dirname, '..');
 
 //  is TypeScript, and `npm test` already compiles it. Build it if it
 // is not there rather than making that a step somebody has to remember.

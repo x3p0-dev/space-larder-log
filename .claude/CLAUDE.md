@@ -9,10 +9,19 @@ what you have, how much, and where it lives; see what's low or out; build a
 shopping list per store.
 
 **This is NOT a WordPress plugin.** It lives in
-`/wp-content/plugins/x3p0-larder-log/` purely for convenience, and it carries
-leftovers that make it look like one (an `x3p0-` name, WordPress-era
-`.gitignore` entries, `.phpstorm.meta.php`, sibling `x3p0-*` plugins in the
-parent directory). Ignore all of that.
+`/wp-content/plugins/space-larder-log/` purely for convenience. The parent
+directory really is full of WordPress plugins -- the `x3p0-*` siblings beside
+it are the genuine article -- and this is not one of them. WordPress-era
+`.gitignore` entries are the only leftover still in the tree. Ignore all of
+that.
+
+**The repository is `x3p0-dev/space-larder-log`**, renamed from
+`x3p0-larder-log` on 2026-09-03 along with the working directory. `x3p0-` is
+the WordPress namespace and this project is Spacefast-specific, which is what
+the rename records. GitHub redirects the old URL indefinitely, so the commit
+links in every published version's git provenance still resolve -- **but that
+redirect dies the moment anything else claims the name `x3p0-dev/x3p0-larder-log`**,
+so do not create one.
 
 Never propose custom post types, taxonomies, post meta, `wp-scripts`,
 `plugin.php`, or anything else WordPress. If a request seems to assume
@@ -2652,9 +2661,28 @@ platform offers no supported way to learn one**:
   request ids and written up in `.claude/docs/spacefast.md`. So the two commands
   that would print the `memberships` rows are the two that are broken.
 
-**The route that works is client-side and undocumented.** The SDK stores the
-identity at `localStorage['stattic_zero_identity']` — a JSON record carrying
-`token` and `userId` — so signed in on the live space, devtools console:
+**Amended 2026-09-07: there is a supported route, and the two broken commands
+are broken for a stated reason.** The rewritten docs say `sf db dump` *"reads
+through the space's live runtime, so it needs the app to be reachable"* — so
+`zero_db_connect_failed` was never a database fault. It is the runtime lane, the
+same one `zero_artifact_mode_invalid` is in.
+
+**`sf db console` is the answer to this whole section.** It mints a
+**single-use phpMyAdmin sign-in URL with full SQL authority** over the space's
+database (`POST /v1/spaces/{spaceId}/db/console`, or **Database → Open db
+console** in the dashboard). It opens a browser by default, because of what the
+URL grants; `--show-secret` prints it instead and is the deliberate override.
+**So `select userId from memberships` is one query away**, and the claim above
+that the platform offers no supported way to learn an `account:` id is retired.
+Nothing else in this section changes: `LARDER_ADMIN_IDS` is still the only gate,
+still fail-closed, and still set out of band.
+
+**The route below still works and is kept for the case where the console is
+not to hand** — it needs no dashboard, no browser session on api.spacefast.com,
+and no full-SQL grant, which makes it the smaller thing to reach for. The SDK
+stores the identity at `localStorage['stattic_zero_identity']` — a JSON record
+carrying `token` and `userId` — so signed in on the live space, devtools
+console:
 
 ```js
 JSON.parse(localStorage.getItem('stattic_zero_identity')).userId   // "account:…"
@@ -5781,13 +5809,25 @@ checked against the FIPS 180-4 vectors. `crypto` is still preferred when
 present, so **`sf dev` never exercises the path production uses** — if you touch
 `inviteCode`, force `crypto` off locally *and* keep the unit tests green.
 
-### `sf db dump` is broken — open, 2026-08-26
+### `sf db dump` is broken — 2026-08-26, explained 2026-09-07
 
 `zero_db_dump_failed`, a 500 from the edge, with or without the rationale
 header, against a healthy space. `sf db` works in the same second and still
 prints the live table list. This is the command that CLAUDE.md used to name for
 verifying a publish and for closing out the D14 auth check, so **both now need
 another route**.
+
+**Why, and what to use instead.** The rewritten docs state it outright: *"The
+dump reads through the space's live runtime, so it needs the app to be
+reachable."* So `sf db dump` and `sf db export` are not database commands that
+happen to fail — they are **runtime** commands, and they fail wherever the
+capsule lane does. `sf db` keeps working because it reads **version metadata**,
+which is also why `sf runtime status` answers *"while the runtime is asleep or
+moving"* and is the better first call when something is wrong.
+
+**`sf db console` is the route that does not go through the runtime**: a
+single-use phpMyAdmin URL with full SQL authority, from the dashboard or the
+CLI. See *Going live needs one id that nothing will tell you* above.
 
 ### Two auth bypasses, and they are not equally safe
 
@@ -5862,17 +5902,39 @@ These are hard platform limits and they shape everything:
 
 ### Reading the Spacefast docs
 
-The whole runtime reference is one file:
-**`https://spacefast.com/docs/zero-runtime.md`** (~22 KB of plain Markdown —
-schema API, auth, storage, styling, limits, and a complete example app).
+**The docs were rewritten wholesale on 2026-09-05** — `spacefast/docs` #41,
+every page replaced — and the single-file runtime reference this project leaned
+on is gone. `https://spacefast.com/docs/zero-runtime.md` is **~212 lines** now:
+a hub that declares Zero, shows one minimal app, and hands the depth to siblings
+— `/database`, `/crons`, `/storage`, `/logs`, `/environment-variables`,
+`/config-file`, `/limits`, `/routing`, `/access`. The 674-line page it replaced
+survives only in git history, at `ffbd49e^:content/zero-runtime/index.mdx`.
 
-**It was `/docs/zero.md` and that path now 404s** (checked 2026-08-29) — the
-page moved and nothing redirects. Worse, the 404 body is 25 KB of HTML, so a
-script that does not check the status code gets a page of `<script>` tags where
-it expected Markdown. The HTML page at `/docs/zero` still works, which is why a
-browser sees nothing wrong. **`https://spacefast.com/docs/llms.txt` is the index
-that names the current URL of every page** — check it there before assuming a
-docs page is gone.
+**Read the repo, not the site.** `github.com/spacefast/docs` is public and a
+shallow clone is 25 MB:
+
+```bash
+git clone --depth 60 https://github.com/spacefast/docs.git
+```
+
+`content/` holds every authored page; `generated/` holds what a page cannot —
+**591 error-code pages** under `generated/errors/`, the OpenAPI snapshots, the
+CLI reference, and the package changelogs. And `git log` is the only way to see
+what a rewrite *changed*, which is how the endpoint `mode` requirement was found
+at all.
+
+**Treat the new pages as the platform's intent, not as the API we compile
+against.** They document `endpoint({ mode, method, path })`, and
+`@spacefast/zero@0.2.2` — still `latest`, still 2026-08-28 — has no `mode` on
+`EndpointRoute`. Adding one is a `TS2353`. See the two 2026-09-07 entries in
+`.claude/docs/spacefast.md`, which are the whole account of the blockade.
+
+**`/docs/zero.md` 404s** (checked 2026-08-29, still true) — 2026-09-06 made
+`/docs/zero-runtime` canonical and left the old routes as redirects. The 404
+body is 25 KB of HTML, so a script that does not check the status code gets a
+page of `<script>` tags where it expected Markdown, and a browser sees nothing
+wrong. **`https://spacefast.com/docs/llms.txt` is the index that names the
+current URL of every page** — check it there before assuming a page is gone.
 
 A plain `curl` works — **the 403 to programmatic fetches was fixed on
 2026-08-25**, so the browser User-Agent this file used to insist on is no longer
@@ -5885,11 +5947,13 @@ curl -sL https://spacefast.com/docs/zero-runtime.md
 Every docs page has a `.md` twin at the same path. Prefer it over the HTML. If a
 page ever 403s again, a desktop browser User-Agent was the old workaround.
 
-**But read `.claude/docs/zero-agent-rules.md` first.** It is the `AGENTS.md`
-that `sf init --runtime zero` scaffolds, and it is denser and more accurate than
-the public docs — it is the only place that documents the static-class-names
-rule, the semantic token vocabulary, the server's import restrictions, and the
-fact that platform modules don't count against the client bundle budget.
+**`.claude/docs/zero-agent-rules.md` is still worth reading beside them.** It is
+the `AGENTS.md` that `sf init --runtime zero` scaffolds, and it was for months
+the only place documenting the static-class-names rule, the semantic token
+vocabulary, the server's import restrictions, and the fact that platform modules
+don't count against the client bundle budget. **The 2026-09-05 rewrite covers
+all four now**, so the gap it filled has closed — but it is pinned to the
+toolchain we actually compile against, which the new pages are not.
 
 ## Documentation map
 
@@ -6013,6 +6077,17 @@ drawn here once. **The commands are top-level**, and all four are in the pinned
 | `sf promote <version>` | the same operation, forwards |
 | `sf channels ls` / `sf channels history` | where `live` points, and every move with its actor. **Both crash in their table renderer — use `--json`** |
 | `sf apply` | push settings saved in the dashboard onto the serving runtime, **without** creating a content version |
+
+**`sf runtime status` is the first call to make when something is wrong**, and
+it was found in the docs repo rather than in `--help`. It answers from **version
+metadata rather than the runtime**, so it works *"while the runtime is asleep or
+moving"* — the condition this space has been in since 2026-09-01. `--json`
+prints the live and pending version ids, the live URL, and for a capsule: every
+table, query, mutation and **endpoint with its resolved `mode`**, both bundle
+sizes, the schema hash, the `.env.server` variable **names**,
+`migrateAtFinalize`, `blockIncompatibleRollback`, and the realtime paths. The
+endpoint's `mode` is the field our own compiler never emits and the platform
+derives anyway, which is how the 422 was pinned down.
 
 `sf publish --target preview` creates a version without serving it, which is the
 way to stage a risky publish. See
