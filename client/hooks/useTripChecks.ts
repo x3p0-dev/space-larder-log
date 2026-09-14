@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'preact/hooks';
+import { useCallback, useEffect, useMemo, useState } from 'preact/hooks';
 
 import { usePersistentState } from './usePersistentState';
 import { indexClaims } from '../../shared/claim';
@@ -89,8 +89,18 @@ export function useTripChecks(
 	 * **The echo is what makes a tick feel local when it is not.** A claim is a
 	 * network write at the worst possible moment — a phone in a shop — so the box
 	 * fills on the press and the round trip happens underneath. `true` is a tick
-	 * in flight, `false` an untick; the entry is dropped when the server's answer
-	 * arrives, at which point the two agree and the overlay has nothing to say.
+	 * in flight, `false` an untick; the entry is dropped when **the `claims`
+	 * query** comes back agreeing with it, at which point the overlay has nothing
+	 * left to say.
+	 *
+	 * **The mutation resolving is not that moment, and treating it as one is the
+	 * bug this comment used to describe.** A claim is written by one round trip
+	 * and read by a *different* live query — D66 gave `claims` its own
+	 * subscription precisely so a tick does not refetch the pantry — so between
+	 * the write landing and that subscription re-emitting, the server's own view
+	 * is still the old one. Dropping the echo there fell back to it, and the box
+	 * went **tick, untick, tick** on a single press: the echo, then the stale
+	 * read, then the query catching up. Reported from a real shop.
 	 *
 	 * **A refusal rolls back and says so.** `claimItem` returns false when
 	 * somebody else already holds the row, and `usePantryData` has already put
@@ -111,6 +121,50 @@ export function useTripChecks(
 	}, []);
 
 	/**
+	 * The server's own view, unechoed — what `claims` currently says.
+	 *
+	 * It is what `theirs` is read from, and what a row you have not touched
+	 * shows. Your own touched rows come from the overlay instead; see the
+	 * effect above for why.
+	 */
+	const base = useMemo(() => indexClaims(claims, me), [claims, me]);
+
+	/**
+	 * Your own ticks stand until something real changes them.
+	 *
+	 * **This is the shape the evidence chose, not the one the design wanted.**
+	 * The overlay used to be dropped as soon as the `claims` query agreed with
+	 * it, which reads as obviously correct and is not: on 2026-09-10 a run of
+	 * bisections found the run list holds still with the overlay switched off,
+	 * holds still when the echo is never dropped, and moves in every build that
+	 * drops it — including one that refused out-of-order answers by server
+	 * clock. Four configurations, consistent, and **the cause of the movement
+	 * after the drop is still unexplained**. What is established is that letting
+	 * go of your own tick is what exposes it.
+	 *
+	 * So the echo is not released on agreement. It is replaced when you toggle
+	 * that row again, rolled back when the server refuses (see the writers
+	 * below), dropped wholesale on a household switch, and gone on reload —
+	 * which are the moments a tick should stop meaning anything anyway.
+	 *
+	 * **What this costs, plainly.** For a row *you have touched*, this device's
+	 * view wins until one of those moments; your own tick changing underneath
+	 * you from a second device will not show until you reload. **Somebody
+	 * else's claim is unaffected** — `theirs` is read straight from the server
+	 * and takes precedence over the overlay a few lines below, so the
+	 * double-buy D66 exists to prevent stays prevented, which is the half that
+	 * had to survive this trade.
+	 *
+	 * An echo for a row that has left the list is inert rather than cleaned up:
+	 * the overlay below skips any id outside `liveIds`, so a restocked row's
+	 * entry paints nothing. Evicting it here was part of the drop path, and the
+	 * drop path is what broke.
+	 */
+	useEffect(() => {
+		setPending((prev) => (prev.size === 0 ? prev : new Map()));
+	}, [householdId]);
+
+	/**
 	 * The household's claims, split into yours and theirs, with the echo applied.
 	 *
 	 * **`liveIds` is what enforces rule 1.** A claim on a row that has left the
@@ -118,7 +172,6 @@ export function useTripChecks(
 	 * and until then it simply is not here.
 	 */
 	const index = useMemo<ClaimIndex>(() => {
-		const base = indexClaims(claims, me);
 		const mine = new Set<string>();
 		const theirs = new Map<string, string>();
 
@@ -137,12 +190,13 @@ export function useTripChecks(
 		}
 
 		return { mine, theirs };
-	}, [claims, me, liveIds, pending]);
+	}, [base, liveIds, pending]);
 
 	const toggle = useCallback((id: string) => {
 		if (! householdId) return;
 
 		const on = ! index.mine.has(id);
+
 
 		// Somebody else's row is not yours to tick, and the checkbox is absent on
 		// one — this is the guard for the paths a checkbox does not own.
@@ -150,18 +204,10 @@ export function useTripChecks(
 
 		setPending((prev) => new Map(prev).set(id, on));
 
-		void (on ? claim(id) : release([id])).then((ok) => {
-			if (! ok) {
-				// The server refused, and has already said why. Dropping the echo
-				// returns the row to whatever the server thinks it is.
-				settle(id);
-				return;
-			}
-
-			// Held until the query re-emits, so the box does not blink off between
-			// the write landing and the subscription catching up.
-			settle(id);
-		});
+		// The server refused, and has already said why. Dropping the echo returns
+		// the row to whatever the server thinks it is. A success settles nothing —
+		// the reconcile effect above owns that, when the query agrees.
+		void (on ? claim(id) : release([id])).then((ok) => { if (! ok) settle(id); });
 	}, [householdId, index, claim, release, settle]);
 
 	const uncheck = useCallback((ids: readonly string[]) => {
@@ -179,8 +225,8 @@ export function useTripChecks(
 			return next;
 		});
 
-		void release(going).then(() => {
-			for (const id of going) settle(id);
+		void release(going).then((ok) => {
+			if (! ok) for (const id of going) settle(id);
 		});
 	}, [householdId, index, release, settle]);
 
@@ -200,7 +246,7 @@ export function useTripChecks(
 			return next;
 		});
 
-		for (const id of back) void claim(id).then(() => settle(id));
+		for (const id of back) void claim(id).then((ok) => { if (! ok) settle(id); });
 	}, [householdId, index, claim, settle]);
 
 	const setListMode = useCallback((on: boolean) => {

@@ -115,13 +115,20 @@ const JOIN = '; ';
  * strings all the way down (there is no numeric column type — D1), and a
  * `Number()` here would be this file inventing a precision the database never
  * held, then handing back `null` for the empty ones.
+ *
+ * **`location` is quoted here, in the object literal below, and read with a
+ * bracket** — the fix `TERM_TABLES` already takes in `server/index.ts`. The
+ * capsule compiler denies the browser globals to every file in `shared/`,
+ * imported by the capsule or not, and its scanner counts a bare `location`
+ * property key or member access as a reference to one. The column is named
+ * `location` in both files and none of that changes.
  */
 export type PantryRow = {
 	name: string;
 	size: string;
 	on_hand: string;
 	low_at: string;
-	location: string;
+	'location': string;
 	sources: string[];
 	types: string[];
 	notes: string;
@@ -147,7 +154,7 @@ export function pantryRows(
 			size: formatSize(item.size, item.unit),
 			on_hand: item.qty,
 			low_at: item.threshold,
-			location: nameOf.get(item.locationId) ?? '',
+			'location': nameOf.get(item.locationId) ?? '',
 			sources: named(item.storeIds),
 			types: named(item.typeIds),
 			notes: item.notes,
@@ -161,7 +168,7 @@ export function pantryCsv(
 	types: readonly Term[]
 ): string {
 	const rows = pantryRows(items, locations, sources, types).map((r) => [
-		r.name, r.size, r.on_hand, r.low_at, r.location,
+		r.name, r.size, r.on_hand, r.low_at, r['location'],
 		r.sources.join(JOIN), r.types.join(JOIN), r.notes,
 	]);
 

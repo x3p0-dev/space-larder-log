@@ -267,6 +267,35 @@ export type HouseholdListData = {
  * copy of somebody's name out of the database entirely.
  */
 export type ClaimsData = {
+	/**
+	 * The household these claims are **for**, echoed back.
+	 *
+	 * **A query answers about a household it resolved, not the one it was
+	 * asked about.** `selectMembership` heals a request it cannot place — an
+	 * empty id, or one you have left — onto your default household (D33), which
+	 * is the right behaviour for a read and a trap for a caller that assumes
+	 * the answer matches the question. `pantry` and `household` have always
+	 * echoed their resolved id; this one did not, so an answer for the wrong
+	 * household was indistinguishable from an empty cart and cleared every box
+	 * on screen.
+	 */
+	householdId: string;
+	/**
+	 * The server's clock when this answer was computed.
+	 *
+	 * **A subscription can be answered out of order.** A write re-subscribes
+	 * `claims` more than once — the live invalidation and a replay catch-up —
+	 * and `useQuery` keeps whichever response *arrives* last rather than
+	 * whichever was *issued* last. So an answer computed before your tick can
+	 * land after the one computed with it, and the row snaps back with nobody
+	 * touching it. Measured on 2026-09-10 by bisection: the run list holds still
+	 * with the optimistic overlay off, holds still when the overlay never
+	 * settles, and only moves when a settled echo stops masking the query.
+	 *
+	 * One clock, one handler, so the ordering is total and the client can simply
+	 * refuse anything older than what it has already shown.
+	 */
+	answeredAt: number;
 	claims: Claim[];
 };
 

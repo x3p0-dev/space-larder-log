@@ -871,6 +871,12 @@ export default capsule({
 
 			return {
 				state: 'ready',
+				// The household this answers *for*. `selectMembership` heals a
+				// request it cannot place, so the caller has to be able to tell.
+				householdId: membership.householdId,
+				// When it was computed, so a response that overtakes a newer one
+				// can be recognised and dropped. See `ClaimsData`.
+				answeredAt: Date.now(),
 				claims: rows
 					.filter((row) => byTrip.has(row.tripId))
 					.map((row) => ({ itemId: row.itemId, userId: row.userId, tripId: row.tripId })),
@@ -2965,35 +2971,39 @@ export default capsule({
 			}
 
 			// Two writes, because the fallback entropy source *is* the row id and
-			// so cannot be known before the insert. The transaction means a
-			// caller never observes the placeholder.
+			// so cannot be known before the insert, so a caller must never observe
+			// the placeholder.
+			//
+			// `ctx.transaction` is gone as of @spacefast/zero 0.4.1 and the handler
+			// itself is the transaction now — the SDK's own `email` docblock says a
+			// mutation "commits both or neither", and the runtime docs say a handler
+			// runs "in one transaction with the database". So the wrapper was doing
+			// nothing the mutation was not already doing, and removing it changes
+			// what a caller can see by nothing at all.
 			const mintedAt = Date.now();
-			const minted = await ctx.transaction(async () => {
-				const invite = await ctx.db.invites.insert({
-					householdId: membership.householdId,
-					code: PENDING_CODE,
-					role: granted,
-					expiresAt: expiryFrom(mintedAt),
-					createdBy: membership.userId,
-					// The same clock reading the expiry is derived from, so the
-					// two cannot disagree about when this link began.
-					addedAt: stampFrom(mintedAt),
-					// `revoked` is deliberately omitted rather than written as `false`.
-					// It is the schema's only boolean column and this is its only
-					// insert, which makes it the prime suspect for the hosted runtime's
-					// 500; `.default(false)` produces the identical row either way.
-				});
 
-				const code = inviteCode(ctx.log, ctx.env, invite.id);
-
-				await ctx.db.invites.update(invite.id, { code });
-
-				return { code, expiresAt: invite.expiresAt };
+			const invite = await ctx.db.invites.insert({
+				householdId: membership.householdId,
+				code: PENDING_CODE,
+				role: granted,
+				expiresAt: expiryFrom(mintedAt),
+				createdBy: membership.userId,
+				// The same clock reading the expiry is derived from, so the
+				// two cannot disagree about when this link began.
+				addedAt: stampFrom(mintedAt),
+				// `revoked` is deliberately omitted rather than written as `false`.
+				// It is the schema's only boolean column and this is its only
+				// insert, which makes it the prime suspect for the hosted runtime's
+				// 500; `.default(false)` produces the identical row either way.
 			});
+
+			const code = inviteCode(ctx.log, ctx.env, invite.id);
+
+			await ctx.db.invites.update(invite.id, { code });
 
 			ctx.invalidate('household');
 
-			return minted;
+			return { code, expiresAt: invite.expiresAt };
 		}),
 
 		revokeInvite: mutation(async (ctx, householdId: string, inviteId: string) => {
@@ -4177,7 +4187,11 @@ export default capsule({
 	},
 
 	endpoints: {
-		status: endpoint({ method: 'GET', path: '/api/status' }, () => text('ok')),
+		// `mode` is required as of @spacefast/zero 0.4.1, and it is the field the
+		// platform's runner had been demanding since 2026-09-06 while no released
+		// compiler emitted it — see `.claude/docs/spacefast.md`. It reads nothing,
+		// so `read` is both true and the narrower capability set.
+		status: endpoint({ mode: 'read', method: 'GET', path: '/api/status' }, () => text('ok')),
 	},
 });
 

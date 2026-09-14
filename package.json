@@ -12,12 +12,12 @@
 		"test": "tsc -p tsconfig.test.json && node -e \"require('fs').writeFileSync('.test-out/package.json','{\\\"type\\\":\\\"commonjs\\\"}')\" && node .test-out/tests/shared.test.js"
 	},
 	"dependencies": {
-		"@spacefast/zero": "0.2.2",
+		"@spacefast/zero": "0.4.1",
 		"lucide-preact": "^0.575.0",
 		"preact": "^10.29.8"
 	},
 	"devDependencies": {
-		"spacefast": "0.2.2",
+		"spacefast": "0.4.1",
 		"typescript": "^5.9.3"
 	}
 }

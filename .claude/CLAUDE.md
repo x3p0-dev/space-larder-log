@@ -29,13 +29,66 @@ WordPress, say so rather than building it.
 
 ## Current state
 
+**v37 is live as of 2026-09-10** (`ver_a70cef5710e44680a67a3301c1dcc3f3`, 154
+files, **4** uploaded, 70 seconds) and it is **non-migrating** — the plan was
+zero operations, since v32 created the tables. It carries three fixes to the run
+list's ticks and nothing else; see *The run list's ticks* below, which is the
+account of a bug that took a whole evening and whose root cause is **still
+unexplained**. Verified: `GET /` 200, `/api/status` `ok`, fifteen tables /
+fifteen queries / thirty-two mutations, no pending version, `answeredAt` present
+in the served bundle, and the anonymous probe answering exactly as v32's did.
+
+**v32 went live earlier the same day, and it carries D64 through D76.**
+`ver_9b0cdd816c5243ebb04a6d0dbc60eed2`, 156 files, 54 uploaded, 47 seconds —
+the first publish since v19 on 2026-08-31 and **the largest migration this
+project has run**: `applied: true`, `pendingOperationCount: 0`, both schema
+hashes equal at `sha256:d0306af4…`, and **4 `create_table` (`claims`,
+`deletions`, `restocks`, `trips`) + 27 `add_column` + 12 `add_index`**, additive
+throughout. **Fifteen tables, fifteen queries, thirty-two mutations** live.
+**So every *"built and unpublished"* line below is now stale** — restock (D64),
+the list override (D65), shared claims (D66), bulk entry (D67), delete account
+(D68), the charts (D69, D72), the scale rollup (D70, D76), the deletion ledger
+(D71), the A–Z run list (D74) and both exports (D75) are all in production. Only
+D73's type sort is genuinely unbuilt, and it is unbuilt on purpose.
+
+**It ended a nine-day publishing blockade.** Every version finalized between
+2026-09-01 and 2026-09-10 answered `422 zero_artifact_mode_invalid` — the
+platform's runner began requiring an `executionMode` on each emitted handler and
+no released compiler wrote one. **`spacefast@0.4.1` / `@spacefast/zero@0.4.1`
+emit it**, and the hand-patched toolchain that worked around it is retired.
+
+**One thing has to be done by hand, once**: press **Count them** on the
+console's Overview. The live household predates D76's rollup columns, so it
+reports as *not counted* until the repair walks it.
+
+Verified the usual way plus two new checks: `GET /` 200 — **and `/` is a page
+route now, not a static `index.html`** — `/api/status` `ok`, all three payload
+hashes `shasum`-matching `.spacefast/zero/public/`, D29 holding (`.claude/`,
+`.docs/`, `.env.server`, `.spacefast/`, `.dev/` all 403), `theme.json` and
+`sf.jsonc` 404 while `package-lock.json` serves, all seven icons 200, and the
+**anonymous probe answering exactly as v17 taught it to**: `households`,
+`profile`, `account` and `claims` all `guest`, `adminAccess`
+`{admin:false, writesHeld:true}`, `adminSummary` `denied`, and
+`createHousehold`, `addItems`, `restockItems`, `deleteMyAccount` and
+`adminRepairCounts` all refused. No pending version and no operation in flight.
+
+**`LICENSE.md` stopped serving raw and is a rendered document now** — `/LICENSE`
+308s to `/LICENSE/` and returns HTML, because 0.4.1 treats a payload `.md` as a
+document. Nothing depended on it; the old check that it serves at `/LICENSE.md`
+is retired.
+
+**The rollback point, if it is ever needed**: `sf rollback
+ver_28fb39a4d5aa40a4b8ed9f53c5987d34` returns to v19 — but that is eleven
+tables against fifteen, and `blockIncompatibleRollback: true`, so it is not a
+free move any more.
+
 **Phase 5 — the admin console — is built and live.** The whole of D62's
 design except board 10, in seven stages on 2026-08-29: the pushed drawer pane,
 Overview, the household list and page, People and the account page, ownership
 transfer, the account-deletion pre-flight, the audit log with retention and
 export, the orphan dialog, the list states and 390. **Its schema change went
 out with v15** — `activity`, the eleventh table — so every publish since has
-been non-migrating. **Nobody has clicked most of it.** It *is* reachable in
+been non-migrating. It *is* reachable in
 production now: `.env.server` carries `LARDER_ADMIN_IDS` with Justin's real
 `account:` id beside his dev `guest:` one — see *Going live needs one id that
 nothing will tell you* below, which is how that id was found. See *The admin
@@ -110,11 +163,11 @@ look at it: the sheet's footer is too cramped for a third control, and
 `ItemSheet.tsx` is byte-identical to what it was before the work. See *Bulk
 entry — the adoption wall (D67)* below.
 
-**D64 and D65 have been clicked and both work** — a real session on 2026-08-31,
-on the first pass, which no phase of this size has managed before; **390 and a
-twenty-row put-away are what it did not cover**. **D66 has been clicked in part**
-— two named guests on one machine, the claimed row and its face confirmed — and
-its copy went through three passes on the strength of that.
+**D64 and D65 worked on the first pass** — a real session on 2026-08-31, which
+no phase of this size has managed before; **390 and a twenty-row put-away are
+what that session did not cover**. **D66 was exercised in part** — two named
+guests on one machine, the claimed row and its face confirmed — and its copy
+went through three passes on the strength of that.
 
 **Live as of v18: autofill (D63) and three fixes.** Two suggestion menus — one under
 the item name on the Add / Edit sheet, one under the top-bar search — built from
@@ -123,8 +176,7 @@ is unchanged. It also brings the item grid's search into line with the menu's
 matching, gives the search field the `×` D45 has claimed since it was written,
 and adds `shared/suggest.ts` and `shared/catalog.ts`. **`Dry Goods` is a
 fifteenth seeded type** with it (D50, amended), which reaches new households
-only. See *Autofill — the name field and search (D63)* below. **Nobody has
-clicked it in production.**
+only. See *Autofill — the name field and search (D63)* below.
 
 **Three fixes rode with it, all found by using the app.** The console's two
 cross-links landed on a list rather than on the row that was pressed; the
@@ -246,9 +298,7 @@ ops with their defaults, and `data.schemaHash` equal to
 **v13 was the publish that ended the rationale blockade**, and **v14 confirmed
 it**: a second plain `npx sf publish`, first try, no shim. It went out with
 a plain `npx sf publish`, first try, no shim and no `NODE_OPTIONS` — see
-*Publishing works* below, which is rewritten. **Nobody has clicked v13 or
-v14** — everything below that says "nobody has clicked it" is still true, and is
-now true *in production* rather than only locally.
+*Publishing works* below, which is rewritten.
 
 v12 (`ver_50b38d7b92f2450a999c7835726c6411`, 121 files) carried Phases 4.13 and
 4.14 and D52–D57, and is **the publish that took four columns live in one go**:
@@ -534,10 +584,9 @@ drifts out of the design document silently.**
 now differs from the front-door boards: the third benefit said *"Nothing to tick
 off"*, which the checkbox makes false.
 
-**Nobody has clicked any of it.** Verified the usual way: the capsule compiles
-and reloads, `npm run typecheck` is clean, `npm test` passes, and every new
-utility class is in `/zero.css` — checked by **printing the selectors**, not by
-hand-writing the escaped form.
+Verified the usual way: the capsule compiles and reloads, `npm run typecheck`
+is clean, `npm test` passes, and every new utility class is in `/zero.css` —
+checked by **printing the selectors**, not by hand-writing the escaped form.
 
 ### Household colour (Phase 4.9) is built — 2026-08-26
 
@@ -630,9 +679,10 @@ classes are in `/zero.css` in the right order (base → hover → active), and t
 **real handlers** were driven over `POST /__spacefast/zero/run` — an explicit
 `color-7` stored, an omitted colour resolving to a stable default,
 `updateHousehold` writing a new one, `invitePreview` returning the household's
-own colour. **Nobody has clicked any of it.**
+own colour.
 
-**Superseded 2026-08-27: it has been clicked.** A real session on a Pixel 8 Pro
+**And clicking it found what none of that could — 2026-08-27.** A real session
+on a Pixel 8 Pro
 and with a second person found six defects nothing in this list could have
 caught — a stale effect dependency, a ring clipped by `overflow-x-auto`, a
 `100vh` drawer running past the mobile viewport, a hover painted the colour of
@@ -736,7 +786,7 @@ of them new, covering the OR/AND rule including the case that separates it from
 OR-across — `sf dev` on `--port 4199` compiles and serves, and **every** new
 utility is in the live `/zero.css`, checked by *printing and unescaping the
 selectors*, including the `md:` variants' line numbers to prove each lands after
-the base rule it overrides. **Nobody has clicked any of it.**
+the base rule it overrides.
 
 ### The account's display name (Phase 4.11) is built — 2026-08-27
 
@@ -810,7 +860,7 @@ screen locally, and it costs one Enter.
 shows `profiles` with `by_user` plus `profile` and `setDisplayName`, every new
 utility is in the live `/zero.css` (selectors printed and unescaped, exact
 match), and the **real handlers** were driven over `POST /__spacefast/zero/run`
-on a second `sf dev` at `--port 4199`. **Nobody has clicked it.**
+on a second `sf dev` at `--port 4199`.
 
 ### The sign-in button names no provider — 2026-08-27
 
@@ -852,7 +902,7 @@ from that in production.
 
 Verified: typecheck clean, 235 assertions, `sf dev` on `--port 4199` compiles,
 and the served `/client.js` carries every new string with **no `Gravatar` left
-in the bundle**. **Nobody has clicked it.**
+in the bundle**.
 
 ### Neither name arrives prefilled — 2026-08-27
 
@@ -886,7 +936,7 @@ chose and reported success having collected nothing.
 
 Verified: typecheck clean, 235 assertions, and the running `sf dev` recompiled
 and served a `/client.js` with none of the removed strings and the kept one
-intact. **Nobody has clicked it.**
+intact.
 
 ### The app opens where you left it — 2026-08-27
 
@@ -931,9 +981,9 @@ term-filter groups**, and **the status pill**.
   than a lost filter.
 
 Verified: typecheck clean, 239 assertions, `sf dev` recompiled, and the served
-`/client.js` carries the `.view` key and both drawer fields. **Nobody has
-clicked it** — this is the change most worth clicking, since every part of it is
-about what the second load looks like.
+`/client.js` carries the `.view` key and both drawer fields. **This is the
+change most worth looking at on a second load**, since every part of it is about
+what the second load looks like.
 
 **More of the view is likely to be stored, and the candidates are written up in
 `.docs/notes.md` under *Product questions*** — the sort, an add or edit in
@@ -1063,7 +1113,7 @@ flyout in three wearing a different fill reads as a different kind of thing.
 **Verified without a browser**: typecheck clean, 235 assertions, `sf dev` on
 `--port 4199` compiles and serves, and **every class literal in the twelve
 touched files** was diffed against the live `/zero.css` by unescaping the
-sheet's own selectors — printed, never hand-written. **Nobody has clicked it.**
+sheet's own selectors — printed, never hand-written.
 
 ### Four fixes from a real shop, and a way to reset a trip — 2026-08-28
 
@@ -1137,9 +1187,8 @@ Verified: typecheck clean, 239 assertions, and on a throwaway `sf dev --port
 4199` every new utility (`top-0`, `bottom-0`, `my-auto`, `w-full`, `h-full`,
 `text-left`, `outline-none`, `md:pt-[30px]`, `flex-wrap`, `min-h-[70px]`,
 `basis-[200px]`) is in the live `/zero.css` with the served
-`/client.js` carrying the new class literals and none of the old. **Nobody has
-clicked any of it** — all three are press-time behaviour, so all three want a
-thumb.
+`/client.js` carrying the new class literals and none of the old. **All three
+are press-time behaviour**, so all three want a thumb.
 
 ### Add / edit item, redesigned (Phase 4.13) — 2026-08-28
 
@@ -1246,8 +1295,8 @@ live `/zero.css` — printed and unescaped, never hand-written — and the **rea
 handlers** were driven over `POST /__spacefast/zero/run`: a whole pair stored, a
 unit with no number resolving to 1, a bare number and a bogus unit key both
 resolving to neither, a unit-only patch keeping the number it did not name, and
-`offShoppingList` set and cleared. **Nobody has clicked it** — every interesting part of
-this is press-time behaviour, so all of it wants a thumb.
+`offShoppingList` set and cleared. **Every interesting part of this is
+press-time behaviour**, so all of it wants a thumb.
 
 ### The app now says it is installable (Phase 4.14) — 2026-08-28
 
@@ -1348,8 +1397,6 @@ install a localhost page from that menu. What still cannot be reached locally is
 the **Install** pill, which needs a browser that fires the prompt, and the iOS
 and Android steps.
 
-**Nobody has clicked it.**
-
 ### Members have faces (D55) — 2026-08-28
 
 `.docs/decisions.md` D55. **The sixth additive schema change since Phase 2**:
@@ -1393,8 +1440,8 @@ included**, so your face was the departure rather than their initials.
 artifact shows `picture` with `default: ""` and `db.migrations` empty, and the
 **real handlers** were driven over `POST /__spacefast/zero/run` — the members
 DTO carrying the column, the reconcile clearing a seeded picture, and a second
-call writing nothing. **Nobody has clicked it, and one half cannot be clicked
-here at all**: `sf dev` issues no `auth.picture`, so the stamping path needs the
+call writing nothing. **One half cannot be clicked here at all**: `sf dev`
+issues no `auth.picture`, so the stamping path needs the
 published space. What *is* local is the rendering, via `?members`.
 
 ### The account row, and the app's first outbound link (D56) — 2026-08-28
@@ -1433,8 +1480,7 @@ Verified: typecheck clean, 295 assertions, and on a throwaway `sf dev --port
 4199` **all 32 class literals** in the touched component were diffed against the
 live `/zero.css` by unescaping the sheet's own selectors — printed, never
 hand-written — with `.no-underline` among them. The served `/client.js` carries
-the URL, both labels, `_blank` and `noopener noreferrer`. **Nobody has clicked
-it.**
+the URL, both labels, `_blank` and `noopener noreferrer`.
 
 ### The front door says it is a beta (D57) — 2026-08-28
 
@@ -1498,8 +1544,8 @@ selectors — printed, never hand-written — including `.-top-px` resolving to
 `top: -1px` and `@property --tw-border-style` carrying `initial-value: solid`,
 which is what makes a bare `border` paint the inline `borderColor`.
 
-**Nobody has clicked it, and `?signedout` is the only way to look at it
-locally** — `http://127.0.0.1:4173/?signedout`. The cap-height alignment (a flat
+**`?signedout` is the only way to look at it locally** —
+`http://127.0.0.1:4173/?signedout`. The cap-height alignment (a flat
 `-top-px`) and the gap beside the italic `g` are arguments made on paper.
 
 ### A source carries a kind (Phase 4.15a, D58) — 2026-08-29
@@ -1626,10 +1672,9 @@ grow → shop, a repeat write reporting `changedTables: []` *and*
 shop, a cross-household id refused, a kind surviving a create, and the blocked
 dialog saying **"A source can only be deleted once nothing uses it."**
 
-**Nobody has clicked it.** The menu is the only new surface, and it is the one
-thing that wants a thumb. **To see any of it locally**: Filter tab → `+ Store` →
-name it → the pencil → press the cart glyph. The seeded three are all shops, so
-a fresh household says `Store` until you change one.
+The menu is the only new surface. **To see any of it locally**: Filter tab →
+`+ Store` → name it → the pencil → press the cart glyph. The seeded three are
+all shops, so a fresh household says `Store` until you change one.
 
 ### The run list (Phase 4.15b, D58) — 2026-08-29
 
@@ -1698,7 +1743,7 @@ against the live `/zero.css` by unescaping the sheet's own selectors — printed
 never hand-written. The served `/client.js` carries `To get`, `Harvest` and
 `Run list`.
 
-**Nobody has clicked it, and `?demo` cannot show it** — the seeded sources are
+**`?demo` cannot show it** — the seeded sources are
 all shops, so it draws one band and no segment. To see the bands locally:
 `?demo`, then Filter → the pencil → **Add a source** → *The Garden* → the cart
 glyph → **Grow** → Done, then tag two low items with it. Extending `?demo` is
@@ -1896,8 +1941,7 @@ sheet's own selectors — printed, never hand-written — with `md:mr-0` confirm
 by byte offset to land after the base `-mr-[18px]`, and the built `/client.js`
 carrying `shopping-basket` beside `shopping-cart`.
 
-**Nobody has clicked it**, and this one is entirely widths, heights and glyphs:
-it wants a real 390 phone, a docked drawer at 1280, and a household with all
+**This one is entirely widths, heights and glyphs**: it wants a real 390 phone, a docked drawer at 1280, and a household with all
 three bands. `?demo` still cannot produce a band — the seeded sources are all
 shops.
 
@@ -1978,9 +2022,8 @@ end and an end with no start both stored as neither, a bogus month stored as
 neither, a patch naming one half reading the other off the row (both ways),
 `11`–`2` surviving storage, and clearing one half clearing the pair.
 
-**Nobody has clicked it.** The season panel needs a grow source selected on the
-sheet and the make panel needs a make one, so both are behind the same setup the
-bands are.
+The season panel needs a grow source selected on the sheet and the make panel
+needs a make one, so both are behind the same setup the bands are.
 
 **That completes `garden-and-kitchen.md`'s v1.** Everything left in that
 document — recipes, the ingredient panel, quantities, units, the picker, the
@@ -2119,9 +2162,9 @@ payload (three shops), and `{buy:'yes',grow:1,make:{}}` (none). Locations (3) an
 types (14) are untouched in every branch, and the group word reads `Source` for
 the grow household and `Store` for the other two.
 
-**Nobody has clicked it.** The three rows and the moving hint are the only new
-surface, and `?signedout` does not reach first run — a fresh `sf dev` with no
-household does, and the dialog is one press from the drawer's switcher.
+The three rows and the moving hint are the only new surface, and `?signedout`
+does not reach first run — a fresh `sf dev` with no household does, and the
+dialog is one press from the drawer's switcher.
 
 ### The admin console (D62) — 2026-08-29
 
@@ -2349,9 +2392,8 @@ printed to prove it went.
 **and** `—` as `\u2014`, so a `grep -F` for copy containing either returns 0
 and looks exactly like a missing string.
 
-**Nobody has clicked most of it**, and the one thing that *was* clicked found a
-bug none of the checks above could: the *Admin* row was missing from the rail's
-account flyout. **To see it**: the account row → **Admin**, from the drawer's
+**The first thing clicked here found a bug none of the checks above could**:
+the *Admin* row was missing from the rail's account flyout. **To see it**: the account row → **Admin**, from the drawer's
 foot **or** the collapsed rail, or `http://127.0.0.1:4173/?admin`. The local database has
 `Preflight Test` and `Preflight Solo` to destroy and 7 audit rows to open. What
 it cannot show locally is a space with **no** households (day one), a second
@@ -2455,8 +2497,7 @@ land after the base it overrides (`hover:text-on-dark` after
 `text-on-dark-muted`, both `group-hover:` rules after their bases,
 `hover:bg-surface` after `bg-surface-alt`).
 
-**Nobody has clicked it**, and this one is entirely hover, press and focus: it
-wants a pointer, a Tab key and a screen that takes ten seconds to answer.
+**This one is entirely hover, press and focus**: it wants a pointer, a Tab key and a screen that takes ten seconds to answer.
 
 #### A hover has to move against the ground, and a class cannot see the ground
 
@@ -2608,7 +2649,7 @@ one component over. `bg-drawer-well` on `border-drawer-line`, the month in
 Verified with the rest of the pass: 675 class literals across the console's
 twelve files, 0 missing, and the artifact unchanged.
 
-**Nobody has hovered it.** What it cannot show locally is a space with twelve
+**What it cannot show locally** is a space with twelve
 months of real households — `?demo` fills one household, not a year of them.
 
 #### A member row opens that person — 2026-08-30
@@ -2910,8 +2951,7 @@ excludes it and that the bars do not sum to `holds.items`; an empty household
 still returns twelve zeroed months. `adminSummary` and `adminHousehold` both
 still answer `denied` to an anonymous caller.
 
-**Nobody has clicked it**, and **nothing local can show either chart with real
-shape** — every row created under `sf dev` lands in the current month, so the
+**Nothing local can show either chart with real shape** — every row created under `sf dev` lands in the current month, so the
 bars draw one column, and `?demo` fills one household rather than a space. The
 backdating that made the verification possible is not something a person
 clicking the app can do.
@@ -3013,11 +3053,10 @@ before splitting**, exactly as comments have to be stripped before reading
 source. A check that reports a missing class is worth nothing until it has been
 shown to find one that is really there and refuse one that is really absent.
 
-**Nobody has clicked it.** All of it is press-time: the split's two halves and
-its upward menu, `↓` opening that menu from the label, Escape handing focus
-back, the format check in the console's menu, and the pre-flight's chevron.
-**To see it locally**: Settings → Pantry settings, or `?admin` → Activity →
-Export.
+All of it is press-time: the split's two halves and its upward menu, `↓`
+opening that menu from the label, Escape handing focus back, the format check
+in the console's menu, and the pre-flight's chevron. **To see it locally**:
+Settings → Pantry settings, or `?admin` → Activity → Export.
 
 ### A run list card is A–Z, and nothing else (D74) — 2026-09-02
 
@@ -3060,7 +3099,7 @@ name sorts last must stay last, on the card *and* on the put-away sheet); both
 fail when out-before-low is put back, which was measured rather than assumed.
 **1008 assertions.**
 
-**Nobody has clicked it**, and it is one line of behaviour: open the run list on
+**It is one line of behaviour**: open the run list on
 a card holding a mix of out and low rows and read down it.
 
 ### The type sort is built, measured and reverted (D73) — 2026-09-02
@@ -3174,10 +3213,9 @@ trips reading `[13, 10, 6, 24, 13, 18, 15, 22, 19, 30, 44, 11]` after ~240
 put-aways were seeded — the first time either chart has had shape locally.
 `invites` is gone from the payload.
 
-**Nobody has clicked it.** The rail now holds two cards where it held one, and
-*Sharing*'s label column is 66px against a 172px track — both want a real
-screen, and the 390 layout is inherited rather than designed, as the rest of
-Overview's is.
+The rail now holds two cards where it held one, and *Sharing*'s label column
+is 66px against a 172px track — both want a real screen, and the 390 layout is
+inherited rather than designed, as the rest of Overview's is.
 
 ### The two things the app was throwing away (D71) — 2026-09-02
 
@@ -3227,7 +3265,7 @@ own row plus one for the household that went with it. **993 assertions**, three
 `db.migrations: []`) and **`.docs/data-model.md` diffed against it with zero
 gaps**.
 
-**And it turned up a real bug in code nobody has clicked — not fixed, see
+**And it turned up a real bug in a path nothing had exercised — not fixed, see
 below.**
 
 #### `adminDeleteAccount` asked a question D68 says it must not — found 2026-09-02, fixed the same day
@@ -3509,7 +3547,7 @@ to keep.** It is worse than saying nothing — it tells somebody their console i
 wrong and leaves them without the thing that would mend it. **And a handler's
 name is not a word a person knows.**
 
-**Nobody has clicked the button.** **The published space needs it pressed once
+**The published space needs it pressed once
 after the next publish** — its one household predates the columns.
 
 ### The target is 1,000,000+ households, and that is a design constraint now — 2026-09-02
@@ -3810,10 +3848,10 @@ seventeen false positives, including four that were provably in the sheet. A
 check that reports a missing class is worth nothing until it has been shown to
 find one that is really there *and* one that is really absent.
 
-**Nobody has clicked it.** Every interesting part is press-time and
-keyboard-time: the arrows, the two Escapes, the pick, the chevron's navigation,
-and the term row that stays open. **To see it locally**: any two characters in
-the item name field, or in the top bar's search.
+Every interesting part is press-time and keyboard-time: the arrows, the two
+Escapes, the pick, the chevron's navigation, and the term row that stays open.
+**To see it locally**: any two characters in the item name field, or in the
+top bar's search.
 
 ### Restock — the trip that ends (D64) — 2026-08-31
 
@@ -3971,8 +4009,8 @@ are provably in the sheet were reported missing. **A check that reports a
 missing class is worth nothing until it has been shown to find one that is
 really there and one that is really absent.**
 
-**It has been clicked, and it works** — a real session on 2026-08-31, which is
-the check none of the above substitutes for and the one every previous phase of
+**It worked on the first pass** — a real session on 2026-08-31, which is the
+check none of the above substitutes for and the one every previous phase of
 this size has failed on the first pass. The trip bar, the put-away sheet and the
 after-the-trip screen all read correctly.
 
@@ -4104,11 +4142,153 @@ in the same patch, **a pin surviving a put-away, a `+` on a card and an
 ordinary edit and going only when the segment itself moved**, and a viewer
 refused.
 
-**It has been clicked, and it works** — the same 2026-08-31 session. The
+**It worked too** — the same 2026-08-31 session. The
 segment, its moving hint and the `EXTRA` badge are the new surfaces and all
 three read correctly. **To see it locally**: `?demo` — Peanut Butter is pinned,
 so it is on the run list wearing `EXTRA` — then open any item and the segment is
 under the two steppers.
+
+#### The run list's ticks — three fixes, and a cause still unexplained (v37)
+
+**A whole evening, seven wrong theories, and the fix that shipped was chosen by
+bisection rather than by diagnosis.** Read this before touching
+`useTripChecks.ts` or the `claims` query, because most of the value here is in
+what has been *eliminated*.
+
+**The report**: boxes on the run list tick and untick on their own — sometimes
+seconds after a press, sometimes with nobody touching the page, in more than one
+household.
+
+**What shipped, all three measured separately:**
+
+- **Your tick stands until something real changes it.** The reconcile that
+  dropped the optimistic echo the instant the `claims` query agreed is gone. An
+  echo is replaced when you toggle that row again, rolled back when the server
+  refuses, cleared on a household switch, and gone on reload.
+- **The echo settles on the query, not the mutation** — see the section below,
+  which is a genuine defect with its own failure mode.
+- **`claims` echoes the household it resolved and stamps its answer.** The
+  server heals a request it cannot place onto your default household (D33), so
+  an answer *about a different household* was arriving indistinguishable from an
+  empty cart; and `useQuery` keeps whichever response **arrives** last rather
+  than whichever was **issued** last, so a stale answer could overtake a fresh
+  one. The client now pins its reading to the household on screen and refuses
+  any answer older than the one it is already showing.
+
+**The bisection is the evidence, and it is what to trust:**
+
+| build | result |
+|---|---|
+| optimistic overlay off — screen is the server's answer | **holds still** |
+| overlay on, echo never dropped | **holds still** |
+| overlay on, echo dropped when the server agrees | **moves** |
+| ditto, plus refusing out-of-order answers by server clock | **moves** |
+
+Four configurations, consistent. **Every build that lets go of your own tick
+misbehaves and every build that keeps it is fine** — and dropping an echo that
+agrees with the server is arithmetically invisible at that instant, so the
+movement has to come from the server's answer changing back afterwards. What
+makes that unexplained rather than solved: with the overlay *off*, that same
+changing answer would be visible directly, and it was not.
+
+**So the shipped shape is the one configuration that was watched behaving.** Its
+cost is stated in the code: for a row **you have touched**, this device's view
+wins until you toggle it again or reload, so your own tick changing underneath
+you from a second device will not show. **Somebody else's claim is unaffected** —
+`theirs` is read from the server and outranks the overlay — so D66's double-buy
+protection, the reason the feature exists, is intact.
+
+**What is eliminated, with measurements, so nobody repeats it:**
+
+- **The server.** The same `claims` query answered identically fifteen times in
+  a row; the database held steady while the tester sat still; row counts moved
+  only on real presses.
+- **The wire.** `zero.invalidate ["claims"]` frames were watched arriving on a
+  raw websocket for both a claim and a release.
+- **Identity.** `me` matched the claims' `owners` on every emit; `base.theirs`
+  was always 0.
+- **Listener dispatch.** `queryKey` is `name` + `JSON.stringify(args)`, and the
+  server echoes `args` back, so results cannot cross subscriptions.
+- **The checkbox and the click path.** `CheckBox` is a pure controlled span;
+  every toggle logged `isTrusted true`, `detail 1`, one click one toggle; the
+  toast timer only closes and never undoes; the Cmd/Ctrl+Z handler is properly
+  guarded.
+- **Row keys.** `key={item.id}` and `checked={checked.has(item.id)}` throughout.
+
+**Two things that were *not* the bug but wasted hours, and are worth knowing:**
+
+- **`sf dev` hard-reloads the browser on any file change**, `.claude/` and
+  `.test-out/` included — so writing documentation or running `npm test` while
+  somebody is testing reloads their page, and **a reload mid-flight kills an
+  in-flight mutation**, losing the write. Seventeen reloads in one session. Use
+  `sf dev --no-watch` while anybody is testing. See `.claude/docs/spacefast.md`.
+- **Two browser tabs make the server log unreadable.** Three theories were built
+  on a log that turned out to hold two clients' traffic interleaved, each
+  behaving correctly. **Ask how many tabs are open before reading a shared
+  log.**
+
+**And the amplifier**: on `sf dev`, a mutation costs **4–7 seconds** once
+clients are subscribed — even one that writes nothing and invalidates nothing —
+against ~260 ms reads at the same moment. An optimistic UI written to cover a
+round trip is carrying the interface alone for whole seconds, which turns every
+ordering subtlety into a visible defect. Measured, cause not established, in
+`spacefast.md`.
+
+**Where to start if it recurs**: the bisection tool, not a theory. Switching the
+overlay off, then switching only its removal off, split the problem in half
+twice in minutes — after hours of instrumenting one variable at a time. **And
+instrumentation that changes load is not a neutral observer**: a `ctx.log` added
+to two query handlers was very nearly filed as a two-second platform cost, and
+was not.
+
+#### The echo settled on the wrong event — fixed 2026-09-10
+
+**Reported from using the list: *first click seems to tick, then untick, then
+tick again*, with boxes going unticked later while hovering or doing something
+else.** All of it is one defect, and the file's own comment described the fix it
+did not perform:
+
+```
+// Held until the query re-emits, so the box does not blink off between
+// the write landing and the subscription catching up.
+settle(id);
+```
+
+**It settled on the mutation resolving, and those are two different events.**
+D66 gave `claims` its own subscription precisely so a tick does not refetch the
+pantry — so a claim is *written* by one round trip and *read* by another, and in
+between the server's own view is still the old one. Dropping the echo there fell
+back to it. The three states the report names are exactly the three the code
+produced: the echo, the stale read, the query catching up. Every press did it,
+which is why the later ones look like they happen at random moments.
+
+- **`toggle`, `uncheck` and `recheck` now settle only on a refusal.** A success
+  settles nothing; the echo stands until the query agrees with it.
+- **`base` is the server's unechoed view**, split out of the `index` memo — the
+  reconcile has to compare against *that*, because comparing the echo with the
+  echoed result agrees by construction and would never settle anything.
+- **One effect owns settling**, and its rule is that an entry survives exactly as
+  long as the server disagrees with it. An id that has left the list goes too,
+  or the map leaks an entry per restocked row for the life of the trip.
+
+**A second cause was theorised and disproved, and not "fixed".** `usePantryData`
+resolves `claims` to `[]` unless the query is `ready`, which looked like it would
+blank every tick on screen during each refetch. It does not: `useQuery` holds its
+value in `useState` and replaces it only when a result arrives, so a refetch
+keeps the previous answer. **Reading the SDK settled in a minute what a plausible
+story would have turned into a wrong change.**
+
+**Client-only** — the artifact is unchanged at fifteen tables, fifteen queries,
+thirty-two mutations, `db.migrations: []` — typecheck clean, 1,037 assertions.
+The **real handlers** were driven over `POST /__zero/run`: `claimItem` writing
+and `changedQueries: ["claims"]`, the `claims` query returning the row
+immediately after, a re-claim of your own row reporting `changedTables: []` and
+`changedQueries: []` (the deliberate no-op), and `releaseClaims` taking it back
+out. **The server was never wrong here**, which is what narrowed it to the echo.
+
+**Not verifiable without a browser**: every part of this is press-time, and the
+hook is Preact state, so `npm test` — which covers `shared/` only — cannot reach
+it. It wants a real tick on a real list.
 
 ### Claims are shared, and that stops the double-buy (D66) — 2026-08-31
 
@@ -4216,7 +4396,7 @@ standing; the restock rows carrying the **server-resolved** trip id, shared
 across the trip; leaving a household taking the leaver's claims; and
 `deleteHousehold` clearing trips, claims and restocks together.
 
-**Nobody has clicked it**, and this is the one that most wants two browsers open.
+**This is the one that most wants two browsers open.**
 
 ### Bulk entry — the adoption wall (D67) — 2026-08-31
 
@@ -4348,11 +4528,11 @@ unwritten**, which is the resolve-first guarantee measured rather than asserted;
 dropped while the row still landed; a **cross-household location** refused; and
 a **viewer** refused with D20's own sentence.
 
-**Nobody has clicked it.** Every interesting part is press-time: the split's two
-halves, the chevron menu, the paste sheet's parse, `Set for checked` across
-twenty-two rows, and the review at 390 where the row stacks two-deep. **To see
-it locally**: the chevron beside *Add item*, or `?demo` then the chevron, or a
-fresh household's empty state for the spelled-out pair.
+Every interesting part is press-time: the split's two halves, the chevron
+menu, the paste sheet's parse, `Set for checked` across twenty-two rows, and
+the review at 390 where the row stacks two-deep. **To see it locally**: the
+chevron beside *Add item*, or `?demo` then the chevron, or a fresh household's
+empty state for the spelled-out pair.
 
 #### Six changes from the first look at it — 2026-09-01
 
@@ -4416,8 +4596,7 @@ own selectors — printed, never hand-written, proved to find a real class and
 refuse a bogus one — with `md:left-auto`, `md:right-0` and `md:py-2.5` confirmed
 by **byte offset** to land after their bases.
 
-**Nobody has clicked any of it.** The pickers near the card's edges want a
-pointer.
+**The pickers near the card's edges want a pointer.**
 
 #### And four more, from the second look — 2026-09-01
 
@@ -4494,11 +4673,11 @@ identity` opened a string and swallowed the class list. **Sixth time a tokenizer
 in this project has read prose.** Strip comments before reading source, every
 time.
 
-**Nobody has clicked it.** All four are pointer-and-width work: the wrap at 390
-and between `md` and `lg`, the stepper in a row, and every hover the check can
-only prove exists. **The name field went in with these four and came out again
-the same day** — see the note above; what it leaves behind is the row's gutter,
-which was worth having on its own.
+All four are pointer-and-width work: the wrap at 390 and between `md` and
+`lg`, the stepper in a row, and every hover the check can only prove exists.
+**The name field went in with these four and came out again the same day** —
+see the note above; what it leaves behind is the row's gutter, which was worth
+having on its own.
 
 #### A picker opens where there is room, and that is measured — 2026-09-01
 
@@ -4555,7 +4734,7 @@ the viewport, so a rule that returns a plausible corner and still clips is
 caught. Both reported cases are in there by their real numbers — a chip in the
 right half of a 390 row, and a trigger 54px off the fold.
 
-**Nobody has clicked it**, and this one especially wants a real phone: every
+**This one especially wants a real phone**: every
 number in it is a viewport measurement the test can only simulate.
 
 #### One badge, beside the thing it is about — 2026-09-01
@@ -4817,8 +4996,7 @@ than pretend otherwise it goes, which is what makes *the trigger cannot move
 while its own menu is open* true here rather than merely assumed.
 
 **The console's own pre-flight had the identical bug and nobody had reported
-it**, because nobody has clicked the console's version — same construction, same
-shell, same `overflow-y-auto`. It is fixed with this one.
+it** — same construction, same shell, same `overflow-y-auto`. It is fixed with this one.
 
 **Ten new assertions, and all three rules proved by mutation**: dropping the
 viewport clamp fails 4, hanging *up* from the trigger's bottom rather than its
@@ -4909,7 +5087,7 @@ and working; it never survived a frame.
   overflows exactly as before. The scroller takes `role="none"` so the rows stay
   the menu's own children rather than becoming a group inside it.
 - **The console's copy had both halves of this too**, same construction, same
-  shell — fixed with it, and still unclicked.
+  shell — fixed with it.
 
 **One thing on the same path is knowingly left alone**: `menuOrigin` positions
 an **upward**-opening panel from its *cap* rather than its real height, so a
@@ -5092,8 +5270,7 @@ gets `guest` from the query and *Sign in to use Larder Log.* from both mutations
 The two cascade lists — `deleteHousehold`'s own and `deleteHouseholdRows`' —
 were diffed and agree.
 
-**Nobody has clicked it**, and this is the one that most wants a real session:
-every interesting part is press-time and keyboard-time — the door, the pane's
+**This is the one that most wants a real session**: every interesting part is press-time and keyboard-time — the door, the pane's
 in-place rename, the trigger's menu, the two Escapes, the typed field, the
 transfer's confirm, and both downloads. **To see it locally**: the account row at
 the foot of the drawer → the identity row. A second `?guest=` name in another
@@ -5275,7 +5452,6 @@ starting at all.
 reloads, every new utility class and both tokens are in `/zero.css`, the term
 counts and refusal sentence were exercised through a throwaway endpoint, and the
 artifact still shows nine tables, sixteen mutations, **zero migrations**.
-**Nobody has clicked any of it.**
 
 Phase 4's typography question is also closed, in the opposite direction from
 the one the notes predicted. Zero has no webfont mechanism — `theme.json`'s
@@ -5352,7 +5528,8 @@ content type, and whether a Pixel offers to install it were **post-publish
 checks**. **Two of the three are now answered, on v11**: `/site.webmanifest`
 serves `200 application/manifest+json; charset=utf-8` (769 B) and all three
 icons serve as `image/png`, so the edge maps the extension correctly with no
-configuration. **Nobody has installed it** — that half still needs a phone.
+configuration. **Installing it needs a phone**, which is the half a curl
+cannot answer.
 
 **And as of 2026-08-28 the app finally offers to be installed** — one row in
 Settings › Preferences, D54. See *The app now says it is installable* above.
@@ -5417,8 +5594,7 @@ undisturbed: three items added in order and the middle one removed and undone
 first); seeded terms A–Z and stamped; `changedAt` moving on `adjustQty` and
 again on `updateItem` while `addedAt` holds still; a removed item and a deleted
 term both restored with **both** stamps byte-identical and a visibly newer
-`createdAt`; a renamed store re-sorting alphabetically. **Nobody has clicked
-it.**
+`createdAt`; a renamed store re-sorting alphabetically.
 
 ### Local is a named guest now, and production is authenticated accounts only — 2026-08-30
 
@@ -5923,11 +6099,14 @@ CLI reference, and the package changelogs. And `git log` is the only way to see
 what a rewrite *changed*, which is how the endpoint `mode` requirement was found
 at all.
 
-**Treat the new pages as the platform's intent, not as the API we compile
-against.** They document `endpoint({ mode, method, path })`, and
-`@spacefast/zero@0.2.2` — still `latest`, still 2026-08-28 — has no `mode` on
-`EndpointRoute`. Adding one is a `TS2353`. See the two 2026-09-07 entries in
-`.claude/docs/spacefast.md`, which are the whole account of the blockade.
+**The docs described `0.4.1` before it existed, and that gap is closed as of
+2026-09-10.** They documented `endpoint({ mode, method, path })` while
+`@spacefast/zero@0.2.2` had no `mode` on `EndpointRoute` and adding one was a
+`TS2353` — which was the whole blockade. `0.4.1` **requires** it. Read the
+2026-09-07 and 2026-09-10 entries in `.claude/docs/spacefast.md` together: the
+lesson that outlives the bug is that these pages ran **ahead** of npm by four
+days, so a page describing an API the installed SDK cannot express means *check
+npm*, not *the page is wrong*.
 
 **`/docs/zero.md` 404s** (checked 2026-08-29, still true) — 2026-09-06 made
 `/docs/zero-runtime` canonical and left the old routes as redirects. The 404
@@ -6056,11 +6235,29 @@ npm test             # unit tests over shared/ — compiles with tsc, runs on no
 `sf` is a pinned devDependency, **not** a global install — use the npm scripts
 or `npx sf …`. Do not run the `curl … install.sh | bash` installer; the CLI
 ships on npm as the `spacefast` package and the pinned version is deliberate.
-**It is `spacefast@0.2.2`, pinned exactly** (no `^`), together with
-`@spacefast/zero@0.2.2` — upgraded from 0.0.26 on 2026-08-29, immediately
-before the v13 publish. The two must move together: the CLI bundles
-`@spacefast/zero-compile` at its own version, and that is what compiles the
-capsule.
+**It is `spacefast@0.4.1`, pinned exactly** (no `^`), together with
+`@spacefast/zero@0.4.1` — upgraded from `0.2.2` on 2026-09-10, which is the
+release that **ended the `zero_artifact_mode_invalid` blockade**. The two must
+move together: the CLI bundles `@spacefast/zero-compile` at its own version, and
+that is what compiles the capsule.
+
+**What that upgrade cost, so a future one is read the same way.** Two breaks,
+both caught by `tsc` in one pass: `endpoint()` requires `mode` (`'read'` here,
+and it is typed — a `read` handler is handed a `QueryServerContext` and cannot
+reach `invalidate` or `email`), and **`ctx.transaction` is gone with no
+replacement**, so `createInvite`'s two writes are flat now — the handler *is*
+the transaction. And a third, which typecheck cannot see: **the capsule
+compiler's global denylist became an AST walk that counts property keys and
+member accesses as references**, so `shared/exportData.ts` had to quote
+`location` the way `server/index.ts` already quotes it in `TERM_TABLES`. Only
+the dry run finds that one. `.dev/patch-sf-cli.mjs` — the hand-patched toolchain
+that worked around the blockade — is **retired**; `0.4.1` emits the same
+`executionMode` records natively.
+
+**`sf docs <terms>` searches a bundled offline copy**, new in `0.4.1`, with
+`--full` / `--all` tiers and exact slugs (`sf docs errors/zero_db_transaction_active`).
+It is summaries and URLs rather than whole pages, so it does not replace the
+docs repo — but it is the fastest way to reach an error code's page.
 
 `sf --help` does not list `dev`, `db`, `logs`, or `storage`, but they all exist,
 as do `sf db migrate`, `sf db export`, `sf db dump`, and `sf db console`.
@@ -6114,6 +6311,76 @@ curl -b "spacefast_zero_dev_4173=$CAP" http://127.0.0.1:4173/zero.css
 persists across restarts in `.spacefast/zero/dev-state.sqlite` (gitignored).
 The CLI's own default is `memory`, which resets every run — drop the flag for a
 clean slate, or delete that file.
+
+**That file is not portable across CLI versions, and the failure is a C
+assertion.** The `0.4.1` upgrade could not load the state `0.2.2` had been
+writing all morning: every capsule call answered `500` with
+`Aborted(Assertion failed: list_empty(&rt->gc_obj_list), at JS_FreeRuntime)`,
+while `GET /` still served 200. **Two triggers, both bisected** and written up
+in `.claude/docs/spacefast.md`:
+
+- **A row missing a column the schema declares aborts the runtime.** The
+  fourteen `invites` rows written before D71 added `addedAt` / `redeemedAt` /
+  `redeemedBy` did it on their own, at 4.4 KB. `0.2.2` filled the declared
+  default in. **This is the normal state of every additive migration**, so
+  expect it again on the next one.
+- **Roughly 37,000 object properties**, and **it is not bytes** — 345 KB of
+  padded rows loads, 1.05 MB of ordinary ones does not.
+
+**The repair, if it happens again**: write the missing columns as their declared
+default, and drop whole households you do not need — *whole*, so the rollups
+(D76) stay true of what is left. **Choose which ones by what the console reads,
+not by who can open them.** The first pass kept the seven households Justin is a
+member of and emptied *New households per month*: those seven are the oldest
+rows in the seed, stamped June–July 2025, and every household inside the
+twelve-month window was among the 108 dropped. A fixture has to satisfy the
+charts as well as the app — the window, the pantry-size bands, and the trips
+series — and **selecting by size alone skews it toward empty households**, which
+is the wrong direction for the one chart D69 built to measure adoption. Back the file up first; on 2026-09-10 the
+original is at `.spacefast/zero/dev-state.pre-0.4.1.sqlite`. **The error names
+no table, row or column**, so bisect: fractions of the snapshot, then per table,
+then per field.
+
+**`.dev/seed.cjs` rebuilds a fixture from an empty database** — six named
+accounts, five households, real invites and audit rows — which is the cheap way
+out if a state file is ever unrecoverable.
+
+**`pages/index.tsx` is the app's route, and without it there is no app.**
+`0.4.1` moved routing into `pages/` — the CLI's own `sf init` scaffold says
+*"Addressable pages live in `pages/`… An optional `client/index.tsx` may
+explicitly export `Layout`; it is not a page"* — and **the dev server serves
+`GET /` only when a page claims it**, 404ing otherwise. `"use client"` is what
+makes a `.tsx` page the app rather than a static document owned by WordPress.
+`client/index.tsx` is unchanged and still holds `App` and the four boot side
+effects; the page imports it, which is what runs them.
+
+**Publish and dev disagree here, so check both.** Compiled without `pages/` the
+payload still carries a root `index.html` and would serve `/` in production
+while 404ing locally — the 2026-08-27 asymmetry again, pointing the other way.
+With the page, that file is replaced by `_spacefast/pages/client.html` and `/`
+is a **page route**. **No version has ever been published that way**, so it
+joins `sf.jsonc`'s missing `access` on the list to check at the next publish.
+
+**Run `sf dev --no-watch` whenever anybody is testing.** The watcher ignores
+only `.git`, `.zero`, `.spacefast`, `.stattic`, `dist` and `node_modules` — so
+`.claude/`, `.docs/`, `.dev/` and **`.test-out/`** are all watched, and writing
+a doc or running `npm test` **hard-reloads the tester's browser**
+(`op: "refresh"` → `window.location.reload()`). That is not cosmetic: a reload
+mid-flight kills an in-flight mutation, so a tick or an untick on the wire is
+simply lost. Seventeen reloads happened during one session on 2026-09-10 and
+manufactured symptoms on top of a real bug.
+
+**And a mutation costs 4–7 seconds on `sf dev` once a browser is subscribed** —
+even one that writes nothing — against ~260 ms reads at the same moment. Do not
+read local write latency as anything like production's, and do not design an
+optimistic layer against it.
+
+**And `GET /` answering 200 proves nothing on its own.** Before the bootstrap
+cookie is set, `/` is the capability *gate page* for any caller; the real router
+only runs afterwards. A check that stops at `curl / → 200` is reading the gate.
+Bootstrap first — `POST /__zero/bootstrap` with the capability as a bearer token
+— then ask. **`/__zero/…` is the `0.4.1` path**; `/__spacefast/zero/…` still
+answers, and both work.
 
 ## Verifying work
 
@@ -6307,6 +6574,17 @@ Cheapest first:
 Do not claim something works because it compiled. Three hard limits:
 
 - **There is no browser in this environment.** Justin has to click. Ask him.
+  **Record what the build verified, never whether it has been clicked.** This
+  file is append-only, so "nobody has clicked it" is true for the hour between
+  finishing a feature and Justin looking at it, and false and permanent
+  afterwards — 39 of those lines accumulated here and were retired on
+  2026-09-08, having been read by a later session as a standing backlog when
+  Justin clicks and tests every change. Typecheck, assertion counts, the
+  artifact read and the class diff are claims that stay true; **click status is
+  current state and does not belong in a document nothing ever edits back
+  down.** What *is* worth writing is what a check could not reach — a path that
+  needs the published space, a state `?demo` cannot produce, a number only a
+  real 390 screen settles — because that stays true too.
 - **The signed-out screens need `?signedout` to be reachable at all locally** —
   `http://127.0.0.1:4173/?signedout` for the marketing page,
   `/?signedout&join=<code>` for the invite landing, `/anything?signedout` for

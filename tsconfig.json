@@ -15,6 +15,6 @@
 		"noEmit": true,
 		"types": []
 	},
-	"include": ["client", "server", "shared"],
+	"include": ["client", "pages", "server", "shared"],
 	"exclude": ["node_modules", ".test-out", ".ideas"]
 }

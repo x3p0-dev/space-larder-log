@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'preact/hooks';
+import { useCallback, useMemo, useRef, useState } from 'preact/hooks';
 import { useMutation, useQuery } from '@spacefast/zero/client';
 
 import type { Role } from '../../shared/roles';
@@ -259,11 +259,52 @@ export function usePantryData(selectedHouseholdId: string | null): PantryApi {
 	 * `[]` while the query is in flight or refused, which reads as *nobody has
 	 * claimed anything*. That is the safe direction: the opposite would briefly
 	 * paint somebody else's rows as yours.
+	 *
+	 * **An answer for a different household is not an answer**, and this is the
+	 * guard that says so. Two `claims` subscriptions can be live at once — the
+	 * current household's, and one made with `''` before the stored selection
+	 * was read, which the server heals onto your *default* household (D33) and
+	 * answers honestly with its claims. Both are re-subscribed on every
+	 * invalidation, and `useQuery` keeps whichever response arrives last, so the
+	 * healed answer — usually empty — would land on the run list and clear every
+	 * tick on screen. Measured on 2026-09-10: the server log showed the client
+	 * reading `claims` for the open household and for the healed one in the same
+	 * breath, over and over, while boxes ticked and unticked with nobody
+	 * touching them.
+	 *
+	 * So the reading is pinned to the household actually on screen, and the last
+	 * good one is held rather than falling back to `[]` — a switch keeps the
+	 * previous list for a beat instead of blinking every box off.
 	 */
-	const claims = useMemo(
-		() => (claimsResult.state === 'ready' ? claimsResult.claims : []),
-		[claimsResult]
+	const lastClaims = useRef<{ householdId: string; answeredAt: number; claims: Claim[] }>(
+		{ householdId: '', answeredAt: 0, claims: [] }
 	);
+
+	const claims = useMemo(() => {
+		const answered = claimsResult.state === 'ready' ? claimsResult : null;
+		const held = lastClaims.current;
+
+		/*
+		 * **An answer that overtakes a newer one is refused.** Both conditions
+		 * are load-bearing and they fail differently: a *different household*
+		 * empties the list (the healed answer for your default household is a
+		 * legitimate empty cart), and an *older answer for this household* puts
+		 * back rows you have already released. `>=` rather than `>` so two
+		 * answers inside one millisecond do not deadlock the reading.
+		 */
+		if (answered
+			&& answered.householdId === currentHouseholdId
+			&& (held.householdId !== currentHouseholdId || answered.answeredAt >= held.answeredAt)
+		) {
+			lastClaims.current = {
+				householdId: answered.householdId,
+				answeredAt: answered.answeredAt,
+				claims: answered.claims,
+			};
+		}
+
+		return lastClaims.current.householdId === currentHouseholdId ? lastClaims.current.claims : [];
+	}, [claimsResult, currentHouseholdId]);
 
 	return {
 		status,

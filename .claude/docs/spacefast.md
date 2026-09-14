@@ -6786,3 +6786,959 @@ have most changed how this project verifies its work.
 **CLAUDE.md is stale in one line because of this**: it calls
 `/docs/zero-runtime.md` *"the whole runtime reference… ~22 KB"*. It is 212 lines
 now, and the 674-line page it replaced is only in git history.
+
+## 2026-09-08 — the runtime source is public, and the bug is two files disagreeing
+
+`https://github.com/spacefast/stattic` — *"Experimental runtime for agentic
+artifacts"*, public, issues enabled, **0 open**, synced continuously ("Sync
+runtime source", last push 2026-09-07 14:26 UTC). It carries `crates/` and
+`runtime/engine/` — the Rust runner and the PHP publish path, both of which the
+`zero.view.fast` extract only sampled. This is the primary source, and it is the
+right place to file.
+
+### 🐛 The escape hatch exists, and the publish path destroys the signal it reads
+
+`crates/stattic-zero-runner/src/artifacts.rs` already handles capsules built
+before the execution-mode law. Its own comment says so:
+
+> The execution mode a capsule published before the execution law never
+> declared… apply the pre-law reading rather than reject a version nobody can
+> rebuild.
+
+```rust
+let frozen_shape = self.execution_mode.is_none();          // :98
+…
+capabilities: self.capabilities.resolve(if frozen_shape {
+    EndpointCapabilities::conservative()                    // :123
+} else {
+    EndpointCapabilities::declared_defaults()
+}),
+```
+
+and the refusal is guarded by it:
+
+```rust
+if !self.frozen_shape                                       // :401
+    && self.execution_mode == ExecutionMode::Read
+    && (self.capabilities.fetch || self.capabilities.email || self.capabilities.realtime)
+```
+
+**So an artifact with no `executionMode` — which is every artifact any released
+CLI can build — should be `frozen_shape: true` and exempt.** It is not, and
+`runtime/engine/admin/generate.php` is why:
+
+```php
+if (!array_key_exists('executionMode', $entry)) {           // :1859
+    …
+    $entry['executionMode'] = _stattic_zero_derived_execution_mode(…);  // :1867
+}
+$entry['capabilities'] = _stattic_runtime_zero_endpoint_capabilities($entry['capabilities'] ?? []);
+```
+
+The publish path **stamps** the derived mode onto every entry that arrives
+without one, and passes the capabilities through untouched. By the time the
+artifact reaches disk it looks post-law, `frozen_shape` is `false`, the check
+runs, and the released compiler's constants — `realtime: true`, `email: true` on
+every endpoint and mutation — trip it.
+
+**The bug in one sentence: the stamper and the escape hatch contradict each
+other.** `frozen_shape` exists to identify a pre-law capsule by the absence of
+`executionMode`, and the publish path erases exactly that signal before the
+runner ever sees it. Confirmed from our side by `sf runtime status --json`,
+which reports `"mode": "read"` on an endpoint our compiler never gave one to.
+
+It also explains the second message. `derived_execution_mode` returns **Write**
+for `kind == "run"`, so a stamped query run is `write`, the invocation is `read`,
+and `validate_for` (`:336`) answers *"Zero artifact mode does not match the
+invocation mode."* That is why **v26 with no endpoints at all still failed** —
+the same stamp, on the runs.
+
+Two candidate fixes, both theirs and both small: have `generate.php` not stamp
+at all and let the runner derive (it is already written to), or mark a stamped
+entry as derived so the runner reads it conservatively.
+
+### The shim is not new, so this is not a deploy lag
+
+`artifacts.rs` last changed on **08-31 10:05**, **09-06 13:03** and
+**09-06 14:56**. The `frozen_shape` / `Option<ExecutionMode>` /
+`declared_execution_mode` trio is present in **all three**, 08-31 included — the
+day before the blockade began. So the compatibility path shipped *with* the law
+and has never worked for a fresh publish, which is consistent with every
+observation since 09-01 and rules out "the fix is written and waiting to
+deploy."
+
+### Re-probed today, both public repros, still 422
+
+```
+GET https://zeroprobe.view.fast/api/status        → 422 zero_artifact_mode_invalid
+GET https://zeroperfectprobe.view.fast/api/status → 422 zero_artifact_mode_invalid
+```
+
+`larderlog` itself: `GET /` 200, `/api/status` **`ok`** — v19 unaffected, as it
+has been throughout. npm `latest` is still `0.2.2` at 2026-08-28T23:50Z; the
+docs repo has not moved since 09-06 09:11.
+
+**Those two curls are the fleet check.** They need no publish, no auth and no
+preview session, and they answer in a second. When either returns `ok`, the
+fleet has the fix and this project's publish can go.
+
+## 2026-09-08 — the workaround works: a patched toolchain publishes and serves
+
+**A fresh Zero capsule, published thirty minutes ago onto the same space that
+answered `422 zero_artifact_mode_invalid` this morning, now answers 200 on both
+lanes.** The blockade is a client-side omission after all, and it can be worked
+around from here.
+
+```
+GET  https://zeroprobe.view.fast/api/status
+  → ok                                                            200
+
+POST https://zeroprobe.view.fast/__spacefast/zero/run
+  {"op":"query.run","name":"todos","args":[]}
+  → {"op":"query.result","ok":true,"name":"todos","data":[]}       200
+
+  {"op":"mutation.run","name":"addTodo","args":["…"]}
+  → {"op":"mutation.result","ok":true,"changedTables":["todos"]}   200
+```
+
+Same space (`spc_474a…`), same `sf init --runtime zero --template todo`
+scaffold, same `spacefast@0.2.2`. The only difference is four lines of emitted
+metadata.
+
+**Status as of 2026-09-08, after the report went to the team: the patch is
+reverted.** `npm ci` has been run, `node_modules` is pristine, and nothing in
+this project is publishing with a modified toolchain. `.dev/patch-sf-cli.mjs`
+is kept because it re-applies in one command if the platform fix is slow and a
+publish becomes urgent — **but re-read *a `--target preview` publish took
+production down* below before running it.** The patch makes an artifact
+servable; it does nothing about the `config_update` versions that move the live
+channel, which is the half that took the app down.
+
+### What the patch does
+
+`.dev/patch-sf-cli.mjs`, local and reverted by `npm ci`. It makes the toolchain
+emit the `executionMode` the runner reads and that no released compiler writes:
+
+| record | before | after |
+|---|---|---|
+| `query_*` | *(absent)* | `"read"`, `realtime:false`, `email:false` |
+| `mutation_*` | *(absent)* | `"write"` |
+| `GET /api/status` | *(absent)*, `realtime:true`, `email:true` | `"read"`, `realtime:false`, `email:false` |
+
+With the field present the platform's stamper at `generate.php:1859` leaves it
+alone, the runner's `frozen_shape` reading is not needed, and neither the
+capability check (`artifacts.rs:401`) nor the mode comparison (`:336`) fires.
+
+### 🐛 It had to land in three packages, and two attempts failed silently
+
+This is the part worth keeping, because both failures looked like success.
+
+- **The CLI's own bundles are not what runs.** `spacefast/dist/*.js` carries ten
+  copies of `createZeroRuntimeEndpointSources`, all of which patched cleanly and
+  **none of which executes**. `sf publish` runs
+  `@spacefast/zero-compile/dist/compile.js`, a separate package whose copy is
+  4-space `tsc` output rather than 2-space bundler output, so every exact-literal
+  anchor missed it.
+- **The payload is validated by `.strict()` schemas in a *third* package.**
+  `zeroRuntimeRunSourceSchema` and `zeroRuntimeEndpointSourceSchema` live in
+  `@spacefast/common/dist/contracts/zero.js` and declare five keys each. A field
+  they do not name never reaches `finalize.json` — added to the object,
+  dropped by the parse, no error.
+- **The tell was a capability, not the new field.** After the first patch the
+  endpoint still emitted `"realtime": true`, which the patch would have flipped.
+  A field that is merely absent proves nothing; a field that should have
+  *changed* and did not proves the code never ran. **Patch something observable
+  in both directions, and check the one that cannot be confused with a strip.**
+
+Anchoring on tokens rather than whole literals fixed it. The final run reports
+`helper 5, runCaps 5, endpointCaps 5` across the emitter copies and ~283 schema
+edits — every CLI bundle re-inlines the schema, and an added `.optional()` field
+is inert wherever it is not used.
+
+### 🐛 And a publish flipped the space to private — v4, and v5 was my mistake
+
+**v4 published successfully and answered `403 This space is private` to an
+anonymous `curl`** on every path, `/api/status` included. The scaffold's
+`sf.jsonc` has no `access` key, and publishing without one took a space that had
+been answering anonymous requests that morning — a **422**, from the runtime,
+past no gate — and put a gate in front of it.
+
+**v4 was working.** Justin opened it signed in, passed the gate, and saw the app
+serving with his old test data still in the database. **The workaround was
+already proved at v4**; a 403 is an access page in front of the runtime, and a
+422 is the runtime, so the 403 was evidence the artifact loaded rather than
+evidence it had not.
+
+**I read the 403 as a failure and fixed it by making the space public** — adding
+`"access": "public"` to `sf.jsonc` and publishing v5 — which is an
+outward-facing change to somebody's space, made to suit a `curl`, without
+asking. The right move was to authenticate the probe, or to stop and ask. It is
+a throwaway space and the state it landed in matches where it started, and
+neither of those is the reason it was acceptable, because it was not.
+
+The **finding** survives the mistake and matters more than it did:
+
+**This is the sharpest trap in the whole exercise, and larderlog has the same
+gap**: its `sf.jsonc` declares no `access` either. On a throwaway that cost one
+confusing curl. On the live app it would take the pantry off the internet for
+every signed-in user at the moment of the first successful publish in a week.
+**Add `"access": "public"` to `sf.jsonc` before publishing larderlog**, or
+confirm out of band what the space's current access actually is.
+
+### Where this leaves larderlog
+
+Nothing has been published from this project; live is still v19 and answered
+`ok` throughout. The sequence, unchanged except that it is now possible:
+
+1. `"access": "public"` into `sf.jsonc` — see above.
+2. `sf publish --target preview`. **No migration runs** — `migrateAtFinalize`
+   lands it at promotion.
+3. Probe the staged version with a preview session: `/api/status`, then a real
+   `query.run households` and the anonymous refusals.
+4. Promote. The migration is four tables and the largest this project has run,
+   and `blockIncompatibleRollback: true` means the way back is not free.
+5. Press **Count them** on the console's Overview once — the one household
+   predates the rollup columns.
+
+**File the issue anyway.** A patched `node_modules` survives exactly until the
+next `npm ci`, and the fix belongs in `generate.php` or in a release. The report
+is now as strong as it can get: the failing condition, the escape hatch, the
+line that defeats it, and a working four-line demonstration of what the emitter
+should have written.
+
+## 2026-09-08 — a `--target preview` publish took production down for twenty minutes
+
+**It was restored by a rollback to v19 and the app is healthy** —
+`/api/status` `ok`, `query.run households` answering `{"state":"guest"}` to an
+anonymous caller, live `ver_28fb39a4…`, eleven tables, state active. What
+follows is what happened and why the reasoning that led to it was wrong.
+
+### What a preview publish actually did
+
+```
+16:05:47  ver_6181eea9…  config_update  ready          ← the platform's, not ours
+16:05:59  ver_3a562cb6…  git            created        ← ours, never finalized
+16:06:07  ver_ab4641f0…  config_update  ready, LIVE    ← the platform's, and it won
+```
+
+`sf publish --target preview` uploaded 33 files and then failed at *Finalizing*
+with **`version_not_finalizable`** — *"The live version moved to a newer publish
+after this upload started."* It had: the platform minted **two `config_update`
+versions of its own during the publish**, the second took the live channel, and
+our content version was left at `created` and never served anything.
+
+**And the new live version was broken on arrival.** A `config_update` version
+carries zero file changes — it is the same eleven-table capsule — but it is
+**finalized today**, so it goes through the current runner, collects the
+`executionMode` stamp at `generate.php:1859`, and refuses itself:
+
+```
+GET https://larderlog.view.fast/           → 200   static shell only
+GET https://larderlog.view.fast/api/status → 422   zero_artifact_mode_invalid
+```
+
+So the app served its shell and could not answer a single query. v19 was healthy
+only because it was finalized on 2026-08-31, before the law.
+
+### 🐛 `--target preview` is not isolated, and that is the finding
+
+A preview version is supposed to be created without serving. **The publish still
+applied the space's configuration**, and applying configuration mints a version
+that **takes the live channel**. So on this platform, today, *any* publish from a
+project whose config does not exactly match the space's stored config can move
+production — regardless of `--target`.
+
+That also means the 2026-09-01 entry in this log, which recorded four
+`config_update` versions around a publish and read them as incidental, was
+describing this mechanism without naming it. And the 2026-08-31 entry —
+**"a `config_update` version broke sign-in for the whole space"** — is the same
+event with a different symptom.
+
+**Operational rule until this is resolved: do not publish from this project at
+all.** Not live, not preview, not a dry run followed by a real one. The blast
+radius of a publish is the live channel, and every freshly finalized version is
+unservable while the stamp bug stands.
+
+### The reasoning error, which was mine
+
+I judged a preview publish safe on the argument that a preview does not move the
+live channel, so larderlog would stay on v19 whatever the artifact contained.
+**The counter-evidence was already in this file**, two entries above the one I
+was writing: a `config_update` version had taken the live channel and broken
+sign-in eight days earlier, with no publish involved at all. I read that entry
+while writing about it and still treated `--target preview` as a sandbox.
+
+**A flag that says a version will not be served is not a promise that nothing
+else will be**, and on a platform that mints versions on its own the only safe
+reading of "publish" is "the live channel may move."
+
+### What is still true
+
+- **The toolchain patch works**, and that result is unaffected: `zeroprobe` v5
+  serves `/api/status` `ok`, `query.run` and `mutation.run` both 200, on the
+  same fleet that 422s everything else. The larderlog payload built correctly
+  too — 48 records, 16 `read` / 32 `write`, the endpoint narrowed, and a
+  migration plan that is **additive only**: four `create_table` (`claims`,
+  `deletions`, `restocks`, `trips`), `add_column` and `add_index`, no drops and
+  no renames.
+- **Nothing of the app's data moved.** The version never finalized, so the
+  migration never ran. Eleven tables live, fifteen in the artifact, exactly as
+  before.
+- **`ver_3a562cb6…` is stranded at `created`** and serves nothing. It can be
+  removed with `sf versions rm` or left; it is inert either way.
+
+**This raises the priority of the bug report rather than lowering it.** The
+report now carries a second, worse fact: a tenant cannot publish *at all*
+without risking production, because the platform's own configuration versions
+are unservable under the check it just deployed.
+
+## 2026-09-10 — 👍 `0.4.1` ships the fix, and the blockade is over
+
+**`spacefast@0.4.1` and `@spacefast/zero@0.4.1` went up this morning** — the
+first release since `0.2.2` on 2026-08-28, and the first movement of any kind
+since the 09-06 docs rewrite. **The released compiler now emits the
+`executionMode` the runner has been demanding since 09-06**, which is exactly
+what `.dev/patch-sf-cli.mjs` was hand-writing into `node_modules` on 09-08. The
+patch is not needed and has not been re-applied.
+
+Measured off this project's own `finalize.json`, built by the released
+toolchain with nothing patched:
+
+| | |
+|---|---|
+| `runSources` | **47 — 15 `read`, 32 `write`** |
+| `endpointSources` | `{"executionMode":"read","method":"GET","path":"/api/status"}` |
+| its capabilities | `realtime:false, email:false, storage:false, fetch:false` |
+
+That is byte-for-byte the shape the patch produced, and it is the shape the
+runner's two checks (`artifacts.rs:401`, `:336`) are looking for. **The escape
+hatch can be retired.**
+
+**And the field is `mode` in the SDK now**, which closes the other half of the
+09-07 entry: the docs documented `endpoint({ mode, method, path })` while
+`0.2.2`'s `EndpointRoute` had no such key and adding one was a `TS2353`. In
+`0.4.1` `mode` is **required**, and it is typed rather than decorative —
+`EndpointContext<'read'>` resolves to `QueryServerContext`, so a `read` endpoint
+cannot reach `invalidate` or `email` at compile time. The 422's own detail —
+*"A read handler cannot carry write-side capabilities"* — is that rule stated
+from the other end.
+
+### What breaks, in this app: two things
+
+Both were caught by `tsc` in one pass, and both are in `server/index.ts`.
+
+- **`endpoint()` requires `mode`.** One call site.
+- **🐛 `ctx.transaction` is gone**, with no replacement and no deprecation. It
+  is not on `ServerContext`, not on `QueryServerContext`, and the `Transaction`
+  type is deleted. What is left in its place is a claim: the SDK's `email`
+  docblock says a mutation *"commits both or neither"*, and the runtime docs say
+  a handler runs *"in one transaction with the database"*. **So the handler is
+  the transaction now** and the wrapper was redundant — but that is inference
+  from two sentences neither of which is about transactions, and **a removed API
+  whose replacement is an implicit guarantee should be a release note.**
+  `createInvite` was this app's only caller.
+
+Also removed and unused here: `action`, `SchemaActions`, `ActionServerContext`
+and the client's `useAction`. Added: `connector()`, a whole content-model
+vocabulary (`collections`, `sync`, `ContentFieldDefinition`), `Pages` /
+`definePage` / `usePageParams`, and `provider: "service"` on `AuthContext`.
+`capsule`, `query`, `mutation`, `table`, `string`, `boolean`, `id`, `text`,
+`useQuery`, `useMutation`, `useAuth`, `signInWithGoogle`, `barChartLayout`,
+`ReadDatabaseOf` and `WriteDatabaseOf` are all unchanged.
+
+### 🐛 The global denylist became an AST walk, and it counts property keys
+
+`assertGlobalsAbsent` no longer regexes the transpiled text. It parses and walks
+the syntax tree — a real improvement — and then does this:
+
+```js
+if (node.type === "Identifier" && denied.has(node.name)) identifiers.add(node.name);
+```
+
+**Every `Identifier` node, whatever position it holds.** A property key, a
+member access and a type member are all `Identifier` nodes, so this refuses:
+
+```ts
+type PantryRow = { location: string };   //  a type member
+{ location: nameOf.get(item.locationId) } //  an object key
+r.location                                //  a member access
+```
+
+None of the three can reach a browser global — `location` as a *reference* is
+the only thing the rule is about, and an AST walk is precisely the tool that can
+tell those apart. It flagged `shared/exportData.ts`, which has compiled
+unchanged since D68 on 2026-09-01, with:
+
+```
+Zero source shared/exportData.ts references unsupported server global location.
+```
+
+The fix is to quote the key and read it with a bracket, which is what
+`server/index.ts` already does for `TERM_TABLES` — so this is the second time
+this project has paid for it, and the first time it was the *old* scanner. The
+column is still named `location` in both export files. **The check should test
+the identifier's position**: `node.type === "Identifier"` is true of far more
+than a global reference, and every one of the thirteen denied names
+(`document`, `location`, `navigator`, `window`, `global`, `process`…) is an
+ordinary property name somebody will use.
+
+**The rule for us is unchanged and now firmer**: in `shared/` and `server/`,
+never write a denied word as a bare identifier in *any* position. Quote it.
+
+### Verified
+
+Typecheck clean, **1,037 assertions**, and the artifact is what D76 left it —
+**fifteen tables, fifteen queries, thirty-two mutations, `db.migrations: []`**,
+`/api/status` the only endpoint and now carrying `"mode":"read"`. The migration
+plan is `mode: "safe"`, additive only: four `create_table` (`claims`,
+`deletions`, `restocks`, `trips`) plus `add_column` and `add_index`, no drops
+and no renames.
+
+**The toolchain compiles Tailwind, so a bump can silently move the sheet.** All
+**1,025** selectors in the freshly built `.spacefast/zero/public/zero.css` were
+unescaped and diffed against every class literal in `client/` — **0 missing**,
+the checker proved to find a real class and refuse a bogus one, and the
+byte-offset ordering spot-checked (`-mr-[18px]` at 14615 before `md:mr-0` at
+75644).
+
+The **real handlers** were driven over `POST /__spacefast/zero/run` on a
+throwaway in-memory `sf dev --port 4199`, as two named dev guests:
+`setDisplayName`, `createHousehold`, then **`createInvite` — the handler whose
+transaction was unwrapped** — minting `B54C5ZTMVE`, `invitePreview` reading it
+back as `valid` (so no caller ever sees `PENDING_CODE`), and `redeemInvite`
+joining the second guest. An anonymous caller still gets `{"state":"guest"}` from
+`households`, and `GET /api/status` answers `ok`.
+
+**The live space is untouched and healthy** — `ver_28fb39a4…`, `runtimeState:
+active`, no pending version, eleven tables, `GET /` 200 and `/api/status` `ok`.
+Worth noting from `sf runtime status --json`: **v19's endpoint already reports
+`"mode":"read"`**, stamped by the platform for a version whose artifact never
+carried one. That is why v19 has served throughout while every freshly finalized
+version 422'd.
+
+### 👍 `sf docs` searches a bundled offline copy
+
+New in the CLI, and not in the old `--help`: `sf docs <terms>`, with `--full`
+and `--all` tiers, plus exact slugs (`sf docs errors/zero_db_transaction_active`).
+It is **summaries and URLs rather than whole pages**, so it does not replace the
+docs repo for depth — but it is the fastest way to find an error code's page,
+and the 591 generated error docs are all in it.
+
+`sf --help` still hides `dev`, `db`, `runtime`, `channels`, `apply` and
+`promote`. It has gained a footer nagging about agent tooling
+(*"Run sf setup agent -y to repair it"*), which is a strange thing to print
+under every `--help` in a project that is deliberately not using it.
+
+### What this does not settle
+
+**The 09-08 finding stands: a publish can still move the live channel.** The
+platform mints `config_update` versions of its own during a publish, and one of
+them took production down for twenty minutes with `--target preview` set. That
+is a platform behaviour and nothing in `0.4.1` speaks to it. The two open items
+before this project publishes are unchanged:
+
+1. **`sf.jsonc` declares no `access`.** On the throwaway that flipped a public
+   space private at the first successful publish.
+2. **A `config_update` version is finalized under the current runner.** It
+   should now be servable — it re-derives from the stored artifact, and v19's
+   stamped `mode` suggests the platform fills the field in — but that is
+   inference, not a measurement.
+
+## 2026-09-10 — 🐛 `0.4.1`'s dev server cannot load a state file `0.2.2` wrote
+
+**The upgrade is right and this is the price.** A `--state-backend sqlite`
+database that had been serving this app all morning aborts the QuickJS runtime
+on **every** capsule call under `0.4.1`:
+
+```
+Aborted(Assertion failed: list_empty(&rt->gc_obj_list), at: ../../vendor/quickjs/quickjs.c,1998, JS_FreeRuntime)
+→ 500 zero_dev_endpoint_failed
+```
+
+The dev server starts, prints its banner and serves `GET /` 200. Only the
+runtime dies, and it dies **on teardown** — `JS_FreeRuntime` asserting that the
+GC object list is empty — so what surfaces is a 500 with a C assertion in its
+`detail` and no clue which of your data caused it.
+
+**It is not the sqlite backend.** A fresh state file on the same backend, same
+code, same everything is fine. It is the *contents*.
+
+### Two independent triggers, both bisected in an isolated project copy
+
+**1. A row missing a column the schema declares aborts the runtime.**
+
+This app's fourteen `invites` rows predate D71's `addedAt` / `redeemedAt` /
+`redeemedBy`. **Those fourteen rows — 4.4 KB — abort it on their own.** Write
+the three keys onto the same fourteen rows and the identical data loads:
+
+| state | result |
+|---|---|
+| 14 invites as stored | **abort** |
+| the same 14 with `addedAt`/`redeemedAt`/`redeemedBy` set to `''` | **ok** |
+| one synthetic `{"id":"a"}` in `profiles`, `trips` or `items` | **abort** |
+
+`0.2.2` filled the declared default in; `0.4.1` dies. Deleting a value is no
+escape either — dropping `revoked` from an invite row aborts exactly as leaving
+it does, because *absent* is the condition, not the type.
+
+**This is the most dangerous shape a bug can have here**, because *a column
+added after rows exist* is the normal state of every additive migration this
+project has run — twelve of them — and it is the same condition that left
+`useAvatarSync` inert for a month. The dev store is not MySQL, so this says
+nothing directly about the hosted runtime; **it is worth asking whether the
+production reader has the same assumption**, because there the answer would be
+an outage rather than a local annoyance.
+
+**2. A volume ceiling, and it is not bytes.**
+
+Hydration dies somewhere between **37,400 and 40,800 object properties**:
+
+| what | rows | bytes | properties | |
+|---|---|---|---|---|
+| `itemTypes` whole | 4,439 | 1.21 MB | 26,634 | ok |
+| `items` first 2,200 | 2,200 | 876 KB | 37,400 | ok |
+| `items` first 2,400 | 2,400 | 1.05 MB | 40,800 | **abort** |
+| 100 items padded to 345 KB | 103 | 345 KB | ~1,700 | ok |
+
+So **a table twice the byte size passes while a smaller one aborts** — 345 KB of
+padding is fine and 1.05 MB of ordinary rows is not, because what tracks the
+failure is the object count, not the payload. That fits the assertion, which is
+about objects still alive when the runtime is freed. This project's snapshot was
+**156,881 properties across 15,613 rows**, four times over.
+
+**Neither trigger is announced.** There is no size warning, no "this state file
+was written by an older runtime", no migration. A `--state-backend sqlite`
+database is durable by design and the release that could not read it shipped
+without a word about it.
+
+### 🐛 And the error is unattributable
+
+`Aborted(Assertion failed: list_empty(&rt->gc_obj_list))` names no table, no row
+and no column. Reaching *fourteen invite rows are missing three keys* took a
+bisection over fractions of the snapshot, then per table, then per field — about
+forty dev-server starts. **A dev runtime that refuses data should say which
+data.** The check that would produce that sentence — every row against the
+declared columns — is four lines and the compiler already holds the schema.
+
+### What was done here
+
+`.spacefast/zero/dev-state.pre-0.4.1.sqlite` keeps the original, byte-identical
+(`80131dad…`), and the live state was rewritten to a repaired snapshot:
+
+- **the three D71 columns written as `''`** onto every invite, and
+- **only the seven households Justin is a member of kept**, whole. The other 108
+  are the scale-timing seed and belong to `guest:extra-*` / `guest:solo-*`
+  identities that are not in `LARDER_DEV_GUESTS` and therefore cannot sign in.
+
+**5,089,655 → 445,845 bytes; 15,613 → 1,357 rows; 156,881 → 13,668
+properties.** A household is kept whole or not at all, so every rollup column
+(`itemCount`, `memberCount`, `ownerCount`, `changedAt`) stays true of what is
+left — `adminSummary` reports `uncounted: 0` — and a dangling-reference check
+over the result found none.
+
+**Nothing of the fixture's range was lost.** Those seven cover all six real dev
+guests, every role including a household where Justin is only a **viewer**
+(D30's read-only screen), two empty households, a 223-item pantry, and
+multi-owner households for D22 and D68. Verified after the write: `/api/status`
+`ok`, `households` and `pantry` answering for Justin, `setDisplayName` writing,
+and Alice seeing her own three.
+
+**What did go is the space-wide scale**, which is only interesting to the
+console: Overview now reads 7 households / 17 people / 423 items rather than
+115 / 130 / 4,544. The D76 timing measurement it existed for is already
+recorded, and `.dev/seed.cjs` rebuilds a fixture from nothing in one command.
+
+#### 🐛 And that first cut emptied a chart, which is the lesson
+
+**Reported immediately: *New households per month* showed nothing.** It was
+right to. **All seven households Justin belongs to were created in June and July
+2025** — they are the *oldest* rows in the seed, made before the console's
+twelve-month window opens — so `countByMonth` returned twelve zeroes over a
+fixture that no longer reached the window at all. The 108 households the repair
+dropped were the only ones carrying a stamp inside it.
+
+**Keeping the rows a *person* can reach is not the same as keeping the rows a
+*chart* reads**, and nothing in the first pass asked the second question. The
+cost stated at the time — "space-wide scale, which is only interesting to the
+console" — was true and still missed it: a count is a number you can shrug at,
+and a twelve-month series with no data in it is a screen that looks broken.
+
+The second pass keeps the seven **and** every seeded household that is both in
+the window and small enough to afford, chosen by a greedy fill that balances two
+axes at once — one month at a time, taking whichever pantry-size band is
+furthest below the original 115's mix, cheapest first, to a property budget.
+**Whole households only**, so the rollups stay true.
+
+| | first pass | second |
+|---|---|---|
+| households | 7 | **28** |
+| properties | 13,668 | **33,753** (last known-good load: 37,400) |
+| *New households* | twelve zeroes | `2 3 2 2 2 3 2 1 2 1 1 0` |
+| *Shopping trips* | `0 1 0 0 0 1 2 0 3 3 2 1` | `2 1 1 2 3 6 2 7 4 6 8 3` |
+| *Pantry sizes* | `2 1 1 2 1` | `5 8 8 6 1` against the original's `21 29 35 24 6` |
+
+**A statistically faithful sample was measured and is not affordable** — holding
+the original band mix at even a 35% sample costs 49,036 properties, over the
+ceiling, because the large pantries are where the properties are. So the band
+mix is *approached* rather than reproduced, and the trade is recorded here
+rather than hidden: **selecting by cost alone skews a fixture toward empty
+households**, which is exactly the wrong direction for the one chart D69 built
+to measure whether anybody clears the twenty-item wall.
+
+**Sep 2026 reads 0 and is left reading 0.** No household in the seed was created
+this month, and authoring one to round the chart off would be inventing data to
+make a picture look finished.
+
+## 2026-09-10 — 🐛 and then `GET /` was a 404: `0.4.1` moved routing into `pages/`
+
+**With the state file repaired the dev server still would not serve the app.**
+A browser at the private dev URL got, verbatim:
+
+```json
+{"type":"https://spacefast.com/docs/errors/not_found","title":"Not found",
+ "status":404,"detail":"Not found.","code":"not_found"}
+```
+
+**And `curl` said the opposite**, which is why it took a second report to find:
+unauthenticated, `GET /` is `200` — that is the capability gate page, served to
+*anyone* who has not bootstrapped. Only **after** the bootstrap cookie is set
+does the real router run and answer 404. So every check that stopped at
+`GET / → 200` was reading the gate, not the app.
+
+| | before bootstrap | after bootstrap |
+|---|---|---|
+| `/` | 200 (gate page) | **404** |
+| `/client.js`, `/zero.css` | 401 | 200 |
+| `/api/status` | 200 | 200 |
+
+**The cause is a routing model change nothing announced.** In
+`dist/commands/dev.js`, a `GET` is served the app shell only when a **page**
+claims the path:
+
+```js
+const owner = resolvePageRoute(options.pages ?? [], pathname)?.page;
+if (owner?.render === "client") { …app shell… }
+…
+sendProblem(response, 404, "not_found", "Not found.");
+```
+
+and `buildZeroDevClientAssets` hands the router `bundle`, `utilityCss`, `pages`
+and `documentPreviews` — **`index.html` is not among them**. Pages come from
+`discoverPages`, which reads **`pages/` and nothing else**. This project has a
+`client/` entry and no `pages/`, so `analysis.pages` is `[]` and every path
+404s.
+
+The rule is stated plainly in the CLI's own `sf init` scaffold, and nowhere a
+person upgrading would look:
+
+> Addressable pages live in `pages/`: Markdown and HTML are documents; TSX is a
+> document unless it starts with `"use client"`. … **An optional
+> `client/index.tsx` may explicitly export `Layout`; it is not a page.**
+
+### 👎 And publish and dev disagree about it
+
+The compiler has **not** dropped the old path. Compiled both ways, in process:
+
+| | `staticFiles` at the root | `/` served by |
+|---|---|---|
+| no `pages/` (this project until today) | **`index.html`** | a static file |
+| `pages/index.tsx` | **`_spacefast/pages/client.html`** | the page route |
+
+So a `client/`-only capsule **still publishes a working root document** and
+**cannot be run locally at all**. That is the same shape as the 2026-08-27
+finding that `sf dev` serves the SPA shell for paths the published space 404s,
+and the same lesson: *the local answer is the misleading one*, in whichever
+direction it happens to fall this time.
+
+**A dev server that 404s the app it just compiled should say so.** It knows
+there are no pages — `analysis.pages` is empty at boot, next to a `client/`
+entry it bundled anyway — and that is a one-line warning in the banner.
+
+### What was done here
+
+`pages/index.tsx` — twenty lines of comment and four of code:
+
+```tsx
+"use client";
+import { App } from '../client/index';
+export default function IndexPage() { return <App />; }
+```
+
+`tsconfig.json`'s `include` gained `pages`. **Nothing else moved**:
+`client/index.tsx` still holds `App` and still runs the four boot side effects
+at module scope, which importing it here performs at the same moment as before.
+The capsule is untouched — **fifteen tables, fifteen queries, thirty-two
+mutations, `db.migrations: []`**, `/api/status` still the only endpoint and
+still `"mode":"read"`.
+
+Verified after the change, bootstrapped: `/` **200** serving a shell with
+`<div id="root">` and `/client.js`, the bundle carrying `IndexPage` and the app,
+`/client.js` and `/zero.css` 200, `/api/status` `ok`, and `households` returning
+all seven households for Justin. 1,037 assertions, typecheck clean.
+
+**The one thing this cannot settle from here**: `/` in production is now a page
+route rather than a static `index.html`, and no version has ever been published
+that way. It is the platform's own model and the dry run builds it correctly —
+but it is unverified against a live space, and it goes on the list beside
+`sf.jsonc`'s missing `access` as something to check the moment a publish is
+allowed.
+
+## 2026-09-10 — 🐛 a publish reconciles access, and omitting `access` revokes it
+
+**Rehearsed on `zeroprobe` rather than reasoned about, and the reasoning was
+wrong.** Two questions had to be answered before Larder Log could publish: does
+a **page route** serve `/` in production, and does a publish touch a space's
+**access**? Both were settled by publishing the 0.4.1 `todo` scaffold — schema
+identical to what that space already ran, so `db.migrations` was `0` and nothing
+destructive was planned.
+
+### 👍 A page route serves `/` in production
+
+The 0.4.1 scaffold ships `pages/index.tsx` and `pages/status.tsx`, and its
+payload carries **no root `index.html`** — the same shape Larder Log now has.
+Published and probed anonymously:
+
+```
+GET  /               200   (the page route, with the #root shell and /client.js)
+GET  /status         200   (a second page)
+GET  /api/status     200
+POST /__spacefast/zero/run  {"op":"query.result","ok":true,"name":"todos","data":[]}
+```
+
+So the front-door change is safe, **and this is also `executionMode` confirmed
+in production on a freshly finalized version** — the same space answered
+`422 zero_artifact_mode_invalid` before 0.4.1. Two publishes, both first try,
+11 seconds each, no `config_update` interference and no `--drop` needed.
+
+### 🐛 And the first of those publishes took the space private
+
+`zeroprobe` answered `/api/status` `ok` to an anonymous `curl` this morning.
+After a publish whose `sf.jsonc` had **no `access` key** it answered **403 This
+space is private** on every path, and its grants had changed:
+
+| | before | after |
+|---|---|---|
+| grants | `public`, `team`, … | **`link`**, `team`, … |
+
+Adding `"access": "public"` and republishing put the `public` grant back and
+every path returned to 200. **So `sf.jsonc` is authoritative about access and a
+publish reconciles the space's grants against it. Omitting the key is not
+"leave it alone" — it is an answer, and the answer is "not public."**
+
+The CLI does say so, in the publish output, after the fact:
+
+> This space is not public. To make it public: `sf share grant --to public
+> --role viewer --path '/**' --target live`.
+
+**This is the 2026-09-08 finding, confirmed and correctly explained.** That
+entry recorded a throwaway going private and guessed at the mechanism; this is
+the mechanism, measured in both directions.
+
+### ❗ The correction that matters, and it was mine
+
+Earlier today I told Justin the opposite — that `--access` "only applies when
+this publish **creates** a team-owned space, so it can't change larderlog's
+grants." That reading came from `sf publish --help`, and the flag's help text
+really does say that. **The flag and the config key are different things**: the
+flag seeds access at creation, the `sf.jsonc` key is reconciled on **every**
+publish. I checked the flag, found a sentence that fit, and stopped.
+
+**`sf.jsonc` now declares `"access": "public"`**, with the measurement written
+above the line. Larder Log has been public since v4 and every publish since
+carried no `access` key, so this is either new behaviour in 0.4.1 or a rule the
+project had been getting away with — either way, **without that line the next
+publish takes the app off the web**, and the app's entire signed-out surface
+(the marketing page, the sign-in card, every `?join=` invite link) is exactly
+what a private space refuses.
+
+Verified after the change: the dry run is unchanged apart from the config —
+fifteen tables, fifteen queries, thirty-two mutations, `db.migrations: []`,
+`/api/status` still the only endpoint and still `"mode":"read"` — typecheck
+clean, 1,037 assertions. **Larder Log itself was not published and did not
+move**: still `ver_28fb39a4…`, `GET /` 200, grants `public, team, team`, and
+`.spacefast/state.json` byte-identical to before the rehearsal.
+
+## 2026-09-10 — 👍 v32 is live: the blockade is over and the migration landed
+
+**`sf publish`, plain, first try.** 156 files, **54 uploaded** (incremental),
+**47 seconds**, `ver_9b0cdd816c5243ebb04a6d0dbc60eed2` = **v32**, status ready.
+The first publish since v19 on 2026-08-31, and the one that carries D64 through
+D76.
+
+**The largest migration this project has run, and it applied cleanly:**
+
+```
+applied                true
+pendingOperationCount  0
+schemaHash             sha256:d0306af4e2649ea4087d8b596e3f8c8d82fc7500255e0f438e8e4f99cb5b13b9
+appliedSchemaHash      (equal)
+operations             4 create_table · 27 add_column · 12 add_index
+tables                 11 → 15
+```
+
+`claims`, `deletions`, `restocks` and `trips` are live. Fifteen tables, fifteen
+queries, thirty-two mutations, `/api/status` the only endpoint and carrying
+`"mode":"read"`.
+
+**Two things that had never been tested in production both worked.** `/` is a
+**page route** rather than a static `index.html` and serves 200 — the change
+0.4.1 forced this morning, rehearsed on `zeroprobe` an hour before. And
+`executionMode` is what the runner wanted: a freshly finalized version answers
+rather than 422ing, which is the whole nine-day blockade closed by a released
+toolchain.
+
+**And the platform behaved.** The 2026-09-08 failure mode — `config_update`
+versions minted mid-publish that take the live channel — did not recur. One
+message worth keeping though: the publish opened with
+
+> Waiting for previous serving work on larderlog to settle before creating a
+> version…
+
+which is the CLI now *serialising* against exactly that, and is probably why
+`version_not_finalizable` did not happen again. `sf versions ls` shows v29–v31
+as the platform's own from the earlier attempts; **no pending version and no
+operation in flight** afterwards.
+
+### Verified
+
+| check | result |
+|---|---|
+| `GET /` | 200, page route |
+| `GET /api/status` | `ok` |
+| `client.js` / `zero.css` / `site.webmanifest` | `shasum` match against `.spacefast/zero/public/` |
+| D29 — `.claude/`, `.docs/`, `.env.server`, `.spacefast/`, `.dev/` | **403** |
+| `theme.json`, `sf.jsonc` | 404 · `package-lock.json` 200 |
+| all seven icons | 200 |
+| access grants | `public` still active on `/**` |
+
+**The anonymous probe, across the whole new surface** — `households`, `profile`,
+`account` and `claims` all `guest`; `adminAccess` `{admin:false,
+writesHeld:true}`; `adminSummary` `denied`; and `createHousehold`, `addItems`,
+`restockItems`, `deleteMyAccount` and `adminRepairCounts` all refused. The
+refusals arrive as the opaque `zero_js_execution_failed` /
+*"Exception generated by QuickJS"*, which is the **still-unfixed** message-loss
+problem from v17: a deliberate refusal is byte-identical to a crash. Unchanged
+by 0.4.1, and still the reason not to write another user-facing sentence into a
+`throw`.
+
+### 👎 `LICENSE.md` stopped serving raw, and that is a 0.4.1 routing change
+
+`/LICENSE.md` is **404** and `/LICENSE` **308s to `/LICENSE/`**, returning
+rendered HTML of the GPL. 0.4.1 treats a Markdown file in the payload as a
+**document** — the same `pages/` model that took `index.html` away — so a `.md`
+gets a pretty URL and a renderer instead of being served as bytes. Nothing here
+depended on it; the standing check *"`LICENSE.md` and `package-lock.json`
+serve"* is retired, and `package-lock.json` still serves at its own path.
+
+**Worth knowing before publishing a project with real Markdown in it**: files
+that used to be downloadable are now web pages.
+
+### One grant is now duplicated
+
+`sf share` reports **two active `public` grants** on `/**` — the original
+managed one from space creation and a second created by `"access": "public"`
+reaching the space for the first time. Access is additive so this is harmless,
+but it is untidy and worth collapsing in the dashboard.
+
+### Left to do by hand
+
+**Press *Count them* on the console's Overview, once.** The live household
+predates D76's rollup columns, so it reports as *not counted* until
+`adminRepairCounts` walks it — which is the sentence-and-its-button pairing that
+feature exists to honour.
+
+## 2026-09-10 — 🐛 `.env.server` mints an extra version on every publish
+
+**Reproduced on `zeroprobe`, in both directions.** Larder Log has produced
+`config_update` versions alongside every publish for weeks — v30 and v31
+immediately before v32 — and the trigger is the env file, not the config:
+
+| publish | `.env.server` | extra `config_update` versions |
+|---|---|---|
+| v1–v7 (seven, one of which changed `sf.jsonc`) | absent | **0** |
+| v9 | one variable, first time | **1** |
+| v11 | the same variable, **unchanged** | **1** |
+| v15 | four variables | **3** |
+| v18 | the same four, **unchanged** | **2** |
+
+So **any project carrying a `.env.server` mints extra versions on every
+publish, whether or not a variable changed.** They are minted by the platform
+(`publisher.type: system`, `source.kind: config_update`) seconds *before* the
+content version, and they take the live channel. The count is not a clean
+function of the variables — 1 → 1, four changed → 3, four unchanged → 2 — so
+there is a rule here that is not "one per variable".
+
+**This is what made 2026-09-08 dangerous rather than untidy.** A `config_update`
+version is finalized *now*, so during the `zero_artifact_mode_invalid` window it
+was unservable, and one of them took production down for twenty minutes. With
+0.4.1 emitting `executionMode` they pass through harmlessly — v30 and v31 did —
+but the mechanism is still there.
+
+**Worth fixing at the source**: a publish should not mint a version for an env
+file whose contents did not change, and certainly should not move the live
+channel to do it.
+
+## 2026-09-10 — 🐛 `sf dev` hard-reloads the browser on any file change, including docs
+
+**The watcher ignores `.git`, `.zero`, `.spacefast`, `.stattic`, `dist` and
+`node_modules` — and nothing else.** So `.claude/`, `.docs/`, `.dev/` and
+**`.test-out/`** are all watched, which means writing documentation or running
+`npm test` reloads the tester's page.
+
+And it is a **hard reload**, not a soft invalidation. `dev.js` broadcasts
+`zeroDevRefreshFrame` on every source change; the client's `handleMessage` maps
+`op: "refresh"` to `window.location.reload()`.
+
+**Measured on 2026-09-10: seventeen reloads in one working session**, while
+Justin was testing. It is worse than a flicker — **a reload mid-flight kills an
+in-flight mutation**, so an untick whose release was still on the wire is simply
+lost, and the reloaded page correctly draws the row as still claimed. That
+manufactured symptoms on top of a real bug and cost hours.
+
+**The workaround is `sf dev --no-watch`**, which is now the way to run while
+somebody is testing: nothing an agent writes can touch the page, at the cost of
+restarting by hand after a code change.
+
+**What would fix it upstream**: honour an ignore list (or `.gitignore`), and
+prefer a module reload over `location.reload()` — a full navigation is a
+sledgehammer for a capsule change, and it silently drops requests in flight.
+
+## 2026-09-10 — 🐛 a mutation costs seconds once clients are subscribed
+
+**Measured on `sf dev --state-backend sqlite`, with all handler logging
+removed**, against a 1.1 MB state snapshot:
+
+| | with two subscribed browser tabs | immediately after a restart, nothing attached |
+|---|---|---|
+| `claims` read | **~260 ms** | ~270 ms |
+| `claimItem` | **4.2 s** | ~180 ms |
+| `releaseClaims` that matches **nothing** and invalidates **nothing** | **7.4 s** | ~250 ms |
+
+**A write that changes no rows and invalidates no queries still takes seconds.**
+Reads are unaffected at the same moment, so it is not general slowness — it is
+the mutation path, and it degrades by more than an order of magnitude once
+clients are attached. Ten *concurrent* claims pipeline at ~250 ms apart, so it
+is not a per-mutation constant either.
+
+The cause is not established. The snapshot persist and the broadcast path are
+the obvious suspects, and neither has been isolated.
+
+**Why it matters beyond dev ergonomics**: an app with an optimistic UI is
+written to cover a round trip of tens of milliseconds. At four to seven seconds
+the optimistic layer is carrying the interface on its own for whole seconds,
+which turns every ordering subtlety into a visible defect. It was the amplifier
+behind the run-list bug below, and it is why that bug was so hard to see in one
+place.
+
+### ❗ Retraction: this was nearly filed as a `ctx.log` cost
+
+An earlier measurement in the same session showed writes at 2.25 s with a
+`ctx.log.info` in two query handlers and ~180 ms after removing them, and the
+obvious conclusion — *`ctx.log` costs about two seconds a call* — was one
+sentence away from being written here. **It is false.** The two measurements
+also differed in whether browser tabs were attached, and re-measuring with no
+logging at all reproduced the multi-second writes. Logging is not implicated.
+
+**The lesson is the one this log keeps re-learning**: a difference between two
+measurements is only attributable to the thing you changed if it is the *only*
+thing that changed. Instrumentation that alters load is not a neutral observer.
